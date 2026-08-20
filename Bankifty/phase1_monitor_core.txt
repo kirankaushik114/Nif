@@ -1,0 +1,3126 @@
+"""
+Bank Nifty Continuous RSI Monitor
+
+REAL MARKET DATA
+PAPER / VIRTUAL TRADING ONLY
+
+SIX INDEPENDENT PAPER-TRADING TRIGGERS
+
+1. 1M <= 30
+       CE
+       Target = Entry + 15
+
+2. 1M >= 70
+       PE
+       Target = Entry + 15
+
+3. 15M < 30
+       CE
+       Target = Entry + 45
+
+4. 15M > 70
+       PE
+       Target = Entry + 45
+
+5. 1M < 20
+   AND
+   15M < 25
+       CE
+       Target = Entry + 75
+
+6. 1M > 80
+   AND
+   15M > 75
+       PE
+       Target = Entry + 75
+
+
+SIX INDEPENDENT STRATEGY LOCKS
+
+1M_CE
+1M_PE
+15M_CE
+15M_PE
+COMBINED_CE
+COMBINED_PE
+
+A strategy cannot BUY again while its own trade is OPEN.
+
+After that trade is SOLD, that strategy becomes available again.
+
+NEW PAPER BUYs:
+10:00 AM to 3:00 PM IST only.
+
+NO REAL ORDERS ARE PLACED.
+"""
+
+import time
+
+from datetime import datetime
+from datetime import time as dt_time
+
+from zoneinfo import ZoneInfo
+
+
+from data.historical_data import (
+    GrowwHistoricalData
+)
+
+from indicators.rsi import (
+    candle_closes_to_series,
+    calculate_latest_rsi,
+)
+
+from notifications.email import (
+    EmailNotifier
+)
+
+from paper_trading.trade_manager import (
+    PaperTradeManager
+)
+
+from config.settings import (
+
+    # ========================================================
+    # MARKET
+    # ========================================================
+
+    TIME_ZONE,
+
+    PRE_MARKET_TIME,
+    MARKET_OPEN_TIME,
+    MARKET_CLOSE_TIME,
+    MONITOR_CLOSE_TIME,
+
+    # ========================================================
+    # RSI
+    # ========================================================
+
+    RSI_PERIOD,
+
+    RSI_15_EXTREME_OVERSOLD,
+    RSI_15_EXTREME_OVERBOUGHT,
+
+    RSI_15_BULLISH,
+    RSI_15_BEARISH,
+
+    RSI_1_BULLISH,
+    RSI_1_BEARISH,
+
+    # ========================================================
+    # MONITORING
+    # ========================================================
+
+    CHECK_INTERVAL_SECONDS,
+
+    # ========================================================
+    # EMAIL
+    # ========================================================
+
+    EMAIL_ENABLED,
+
+    EMAIL_ON_PAPER_PURCHASE,
+    EMAIL_ON_PAPER_SELL,
+
+    # ========================================================
+    # PAPER TRADING
+    # ========================================================
+
+    PAPER_TRADING_ENABLED,
+    REAL_ORDERS_ENABLED,
+
+    PAPER_1M_TARGET_POINTS,
+    PAPER_15M_TARGET_POINTS,
+    PAPER_COMBINED_TARGET_POINTS,
+
+    PAPER_STRIKE_STEP,
+    PAPER_LOTS,
+    PAPER_DATABASE_FILE,
+)
+
+
+# ============================================================
+# TIMEZONE
+# ============================================================
+
+IST = ZoneInfo(
+    TIME_ZONE
+)
+
+
+class ContinuousBankNiftyMonitor:
+
+    # ========================================================
+    # INITIALIZATION
+    # ========================================================
+
+    def __init__(self):
+
+        self.historical = (
+            GrowwHistoricalData()
+        )
+
+        # ----------------------------------------------------
+        # EMAIL
+        # ----------------------------------------------------
+
+        self.email = None
+
+        if EMAIL_ENABLED:
+
+            self.email = (
+                EmailNotifier()
+            )
+
+        # ----------------------------------------------------
+        # PAPER TRADING
+        # ----------------------------------------------------
+
+        self.paper_trader = None
+
+        if PAPER_TRADING_ENABLED:
+
+            if REAL_ORDERS_ENABLED:
+
+                raise RuntimeError(
+                    "REAL_ORDERS_ENABLED "
+                    "must remain False."
+                )
+
+            self.paper_trader = (
+                PaperTradeManager(
+                    database_file=(
+                        PAPER_DATABASE_FILE
+                    ),
+                    timezone=TIME_ZONE,
+                    lot_quantity=PAPER_LOTS,
+                )
+            )
+
+        # ----------------------------------------------------
+        # CURRENT DATA
+        # ----------------------------------------------------
+
+        self.last_rsi_1m = None
+
+        self.last_rsi_15m = None
+
+        self.last_bank_nifty = None
+
+        self.last_candle_time = None
+
+        self.data_date = None
+
+    # ========================================================
+    # CURRENT TIME
+    # ========================================================
+
+    def now(self):
+
+        return datetime.now(
+            IST
+        )
+
+    # ========================================================
+    # PARSE HH:MM
+    # ========================================================
+
+    @staticmethod
+    def parse_time(value):
+
+        hour, minute = map(
+            int,
+            value.split(":")
+        )
+
+        return dt_time(
+            hour,
+            minute
+        )
+
+    # ========================================================
+    # MARKET STATE
+    # ========================================================
+
+    def get_market_state(self):
+
+        current_time = (
+            self.now().time()
+        )
+
+        pre_market = (
+            self.parse_time(
+                PRE_MARKET_TIME
+            )
+        )
+
+        market_open = (
+            self.parse_time(
+                MARKET_OPEN_TIME
+            )
+        )
+
+        market_close = (
+            self.parse_time(
+                MARKET_CLOSE_TIME
+            )
+        )
+
+        monitor_close = (
+            self.parse_time(
+                MONITOR_CLOSE_TIME
+            )
+        )
+
+        if current_time < pre_market:
+
+            return "CLOSED"
+
+        if (
+            pre_market
+            <= current_time
+            < market_open
+        ):
+
+            return "PRE-MARKET"
+
+        if (
+            market_open
+            <= current_time
+            < market_close
+        ):
+
+            return "RUNNING"
+
+        if (
+            market_close
+            <= current_time
+            <= monitor_close
+        ):
+
+            return "CLOSED"
+
+        return "CLOSED"
+
+    # ========================================================
+    # PAPER TRADING SESSION
+    # ========================================================
+    #
+    # NEW PAPER BUYs are allowed ONLY:
+    #
+    # 10:00 <= time < 15:00
+    #
+    # Existing OPEN trades can continue to be monitored.
+
+    def is_paper_trading_session(self):
+
+        current_time = (
+            self.now().time()
+        )
+
+        paper_start = dt_time(
+            10,
+            0
+        )
+
+        paper_end = dt_time(
+            15,
+            0
+        )
+
+        return (
+            paper_start
+            <= current_time
+            <
+            paper_end
+        )
+
+    # ========================================================
+    # READ MARKET DATA
+    # ========================================================
+
+    def read_data(self):
+
+        data_1m = (
+            self.historical
+            .get_1_minute_candles()
+        )
+
+        data_15m = (
+            self.historical
+            .get_15_minute_candles()
+        )
+
+        candles_1m = (
+            data_1m.get(
+                "candles",
+                []
+            )
+        )
+
+        candles_15m = (
+            data_15m.get(
+                "candles",
+                []
+            )
+        )
+
+        if not candles_1m:
+
+            raise RuntimeError(
+                "No 1-minute candles received."
+            )
+
+        if not candles_15m:
+
+            raise RuntimeError(
+                "No 15-minute candles received."
+            )
+
+        closes_1m = (
+            candle_closes_to_series(
+                candles_1m
+            )
+        )
+
+        closes_15m = (
+            candle_closes_to_series(
+                candles_15m
+            )
+        )
+
+        self.last_rsi_1m = (
+            calculate_latest_rsi(
+                closes_1m,
+                period=RSI_PERIOD,
+            )
+        )
+
+        self.last_rsi_15m = (
+            calculate_latest_rsi(
+                closes_15m,
+                period=RSI_PERIOD,
+            )
+        )
+
+        self.last_bank_nifty = float(
+            candles_1m[-1][4]
+        )
+
+        self.last_candle_time = (
+            candles_1m[-1][0]
+        )
+
+        self.data_date = (
+            self.historical.data_date
+        )
+
+    # ========================================================
+    # SIX RSI CONDITIONS
+    # ========================================================
+
+    def get_conditions(self):
+
+        rsi_1m = self.last_rsi_1m
+
+        rsi_15m = self.last_rsi_15m
+
+        conditions = set()
+
+        # ----------------------------------------------------
+        # CONDITION 1
+        # 1M <= 30
+        # ----------------------------------------------------
+
+        if (
+            rsi_1m
+            <=
+            RSI_1_BULLISH
+        ):
+
+            conditions.add(
+                "1M_OVERSOLD"
+            )
+
+        # ----------------------------------------------------
+        # CONDITION 2
+        # 1M >= 70
+        # ----------------------------------------------------
+
+        if (
+            rsi_1m
+            >=
+            RSI_1_BEARISH
+        ):
+
+            conditions.add(
+                "1M_OVERBOUGHT"
+            )
+
+        # ----------------------------------------------------
+        # CONDITION 3
+        # 15M < 30
+        # ----------------------------------------------------
+
+        if (
+            rsi_15m
+            <
+            RSI_15_EXTREME_OVERSOLD
+        ):
+
+            conditions.add(
+                "15M_EXTREME_OVERSOLD"
+            )
+
+        # ----------------------------------------------------
+        # CONDITION 4
+        # 15M > 70
+        # ----------------------------------------------------
+
+        if (
+            rsi_15m
+            >
+            RSI_15_EXTREME_OVERBOUGHT
+        ):
+
+            conditions.add(
+                "15M_EXTREME_OVERBOUGHT"
+            )
+
+        # ----------------------------------------------------
+        # CONDITION 5
+        #
+        # 1M < 20
+        # AND
+        # 15M < 25
+        # ----------------------------------------------------
+
+        if (
+            rsi_1m < 20
+            and
+            rsi_15m < 25
+        ):
+
+            conditions.add(
+                "BULLISH"
+            )
+
+        # ----------------------------------------------------
+        # CONDITION 6
+        #
+        # 1M > 80
+        # AND
+        # 15M > 75
+        # ----------------------------------------------------
+
+        if (
+            rsi_1m > 80
+            and
+            rsi_15m > 75
+        ):
+
+            conditions.add(
+                "BEARISH"
+            )
+
+        return conditions
+
+    # ========================================================
+    # RESULT
+    # ========================================================
+
+    @staticmethod
+    def result(condition):
+
+        return (
+            "MET"
+            if condition
+            else
+            "NOT MET"
+        )
+
+    # ========================================================
+    # FULL RSI REPORT
+    # ========================================================
+
+    def build_full_report(
+        self,
+        status
+    ):
+
+        rsi_1m = self.last_rsi_1m
+        rsi_15m = self.last_rsi_15m
+
+        c1 = (
+            rsi_1m <= 30
+        )
+
+        c2 = (
+            rsi_1m >= 70
+        )
+
+        c3 = (
+            rsi_15m < 30
+        )
+
+        c4 = (
+            rsi_15m > 70
+        )
+
+        c5_1m = (
+            rsi_1m < 20
+        )
+
+        c5_15m = (
+            rsi_15m < 25
+        )
+
+        c6_1m = (
+            rsi_1m > 80
+        )
+
+        c6_15m = (
+            rsi_15m > 75
+        )
+
+        generated_time = (
+            self.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        )
+
+        return (
+
+            "=" * 90
+            + "\n"
+
+            + "              BANK NIFTY RSI - "
+            + f"{status}"
+
+            + "\n"
+
+            + "=" * 90
+            + "\n\n"
+
+            + "============================= 1 MIN ===============================\n"
+
+            + f"1) 1M <= 30 → "
+            + f"{self.result(c1)}\n"
+
+            + f"2) 1M >= 70 → "
+            + f"{self.result(c2)}\n\n"
+
+            + "============================ 15 MIN ===============================\n"
+
+            + f"3) 15M < 30 → "
+            + f"{self.result(c3)}\n"
+
+            + f"4) 15M > 70 → "
+            + f"{self.result(c4)}\n\n"
+
+            + "======================== 1 MIN + 15 MIN ===========================\n"
+
+            + "5) BULLISH\n"
+
+            + f"   1M < 20 → "
+            + f"{self.result(c5_1m)}"
+
+            + f" | 15M < 25 → "
+            + f"{self.result(c5_15m)}\n\n"
+
+            + "6) BEARISH\n"
+
+            + f"   1M > 80 → "
+            + f"{self.result(c6_1m)}"
+
+            + f" | 15M > 75 → "
+            + f"{self.result(c6_15m)}\n\n"
+
+            + "========================== CURRENT VALUE ==========================\n"
+
+            + f"   1M         : {rsi_1m:.2f}\n"
+
+            + f"   15M        : {rsi_15m:.2f}\n"
+
+            + f"   Bank Nifty : {self.last_bank_nifty:,.2f}\n"
+
+            + f"   Candle     : {self.last_candle_time}\n"
+
+            + f"   Data Date  : {self.data_date}\n"
+
+            + f"   Current    : {generated_time}\n\n"
+
+            + "=" * 90
+        )
+
+    # ========================================================
+    # SEND EMAIL
+    # ========================================================
+
+    def send_email(
+        self,
+        subject,
+        body
+    ):
+
+        if not EMAIL_ENABLED:
+            return False
+
+        if self.email is None:
+            return False
+
+        try:
+
+            self.email.send(
+                subject=subject,
+                body=body
+            )
+
+            return True
+
+        except Exception:
+
+            return False
+
+    # ========================================================
+    # PAPER BUY EMAIL
+    # ========================================================
+
+    def send_paper_purchase_email(
+        self,
+        trade
+    ):
+
+        if not EMAIL_ENABLED:
+            return
+
+        if not EMAIL_ON_PAPER_PURCHASE:
+            return
+
+        current_time = (
+            self.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        )
+
+        subject = (
+            "BANK NIFTY PAPER BUY - "
+            f"{trade['strategy']} - "
+            f"{trade['option_type']} - "
+            f"{current_time}"
+        )
+
+        body = (
+
+            "=" * 70
+            + "\n"
+
+            + "       BANK NIFTY PAPER TRADE - VIRTUAL BUY\n"
+
+            + "=" * 70
+            + "\n\n"
+
+            + f"Strategy       : {trade['strategy']}\n"
+            + f"Signal         : {trade['signal']}\n"
+            + f"Option         : {trade['option_type']}\n"
+            + f"Strike         : {trade['strike']:.0f}\n"
+            + f"Trading Symbol : {trade['trading_symbol']}\n\n"
+
+            + f"Entry LTP      : {trade['entry_price']:.2f}\n"
+            + f"Target         : {trade['target_price']:.2f}\n"
+            + f"Target Points  : +{trade['target_points']:.2f}\n\n"
+
+            + f"1M RSI         : {self.last_rsi_1m:.2f}\n"
+            + f"15M RSI        : {self.last_rsi_15m:.2f}\n"
+            + f"Bank Nifty     : {self.last_bank_nifty:,.2f}\n\n"
+
+            + f"Quantity       : {PAPER_LOTS}\n"
+            + f"Entry Time     : {current_time}\n\n"
+
+            + "REAL ORDER     : NO\n"
+            + "TRADE TYPE     : PAPER / VIRTUAL\n\n"
+
+            + "=" * 70
+        )
+
+        self.send_email(
+            subject,
+            body
+        )
+
+    # ========================================================
+    # PAPER SELL EMAIL
+    # ========================================================
+
+    def send_paper_sell_email(
+        self,
+        trade_id
+    ):
+
+        if not EMAIL_ENABLED:
+            return
+
+        if not EMAIL_ON_PAPER_SELL:
+            return
+
+        if self.paper_trader is None:
+            return
+
+        connection = (
+            self.paper_trader._connect()
+        )
+
+        try:
+
+            cursor = connection.execute(
+                """
+                SELECT
+                    strategy,
+                    signal,
+                    option_type,
+                    strike,
+                    trading_symbol,
+                    entry_time,
+                    entry_price,
+                    target_price,
+                    target_points,
+                    exit_time,
+                    exit_price,
+                    quantity,
+                    pnl_points,
+                    pnl_value,
+                    exit_reason,
+                    entry_rsi_1m,
+                    entry_rsi_15m,
+                    entry_bank_nifty
+
+                FROM paper_trades
+
+                WHERE id = ?
+
+                AND status = 'CLOSED'
+                """,
+                (
+                    trade_id,
+                ),
+            )
+
+            trade = cursor.fetchone()
+
+        finally:
+
+            connection.close()
+
+        if trade is None:
+            return
+
+        (
+            strategy,
+            signal,
+            option_type,
+            strike,
+            symbol,
+            entry_time,
+            entry_price,
+            target_price,
+            target_points,
+            exit_time,
+            exit_price,
+            quantity,
+            pnl_points,
+            pnl_value,
+            exit_reason,
+            entry_rsi_1m,
+            entry_rsi_15m,
+            entry_bank_nifty,
+        ) = trade
+
+        subject = (
+            "BANK NIFTY PAPER SELL - "
+            f"{strategy} - "
+            f"{option_type} - "
+            f"{exit_time}"
+        )
+
+        body = (
+
+            "=" * 70
+            + "\n"
+
+            + "       BANK NIFTY PAPER TRADE - VIRTUAL SELL\n"
+
+            + "=" * 70
+            + "\n\n"
+
+            + f"Trade ID       : {trade_id}\n"
+            + f"Strategy       : {strategy}\n"
+            + f"Signal         : {signal}\n"
+            + f"Option         : {option_type}\n"
+            + f"Strike         : {strike:.0f}\n"
+            + f"Trading Symbol : {symbol}\n\n"
+
+            + f"Entry Price    : {entry_price:.2f}\n"
+            + f"Target Price   : {target_price:.2f}\n"
+            + f"Target Points  : +{target_points:.2f}\n"
+            + f"Exit Price     : {exit_price:.2f}\n\n"
+
+            + f"P&L Points     : {pnl_points:+.2f}\n"
+            + f"Virtual P&L    : {pnl_value:+.2f}\n\n"
+
+            + f"Entry RSI 1M   : {entry_rsi_1m:.2f}\n"
+            + f"Entry RSI 15M  : {entry_rsi_15m:.2f}\n"
+            + f"Entry BankNifty: {entry_bank_nifty:,.2f}\n\n"
+
+            + f"Quantity       : {quantity}\n"
+            + f"Entry Time     : {entry_time}\n"
+            + f"Exit Time      : {exit_time}\n"
+            + f"Exit Reason    : {exit_reason}\n\n"
+
+            + "REAL ORDER     : NO\n"
+            + "TRADE TYPE     : PAPER / VIRTUAL\n\n"
+
+            + "=" * 70
+        )
+
+        self.send_email(
+            subject,
+            body
+        )
+
+    # ========================================================
+    # SIX PAPER TRADING SIGNALS
+    # ========================================================
+
+    def get_paper_signals(self):
+
+        rsi_1m = self.last_rsi_1m
+        rsi_15m = self.last_rsi_15m
+
+        signals = []
+
+        # ====================================================
+        # CONDITION 1
+        # 1M <= 30 -> CE +15
+        # ====================================================
+
+        if (
+            rsi_1m
+            <=
+            RSI_1_BULLISH
+        ):
+
+            signals.append({
+
+                "condition_number": 1,
+
+                "condition_text":
+                    "1M <= 30",
+
+                "strategy":
+                    "1M_CE",
+
+                "signal":
+                    "BULLISH",
+
+                "option_type":
+                    "CE",
+
+                "target_points":
+                    PAPER_1M_TARGET_POINTS,
+
+            })
+
+        # ====================================================
+        # CONDITION 2
+        # 1M >= 70 -> PE +15
+        # ====================================================
+
+        if (
+            rsi_1m
+            >=
+            RSI_1_BEARISH
+        ):
+
+            signals.append({
+
+                "condition_number": 2,
+
+                "condition_text":
+                    "1M >= 70",
+
+                "strategy":
+                    "1M_PE",
+
+                "signal":
+                    "BEARISH",
+
+                "option_type":
+                    "PE",
+
+                "target_points":
+                    PAPER_1M_TARGET_POINTS,
+
+            })
+
+        # ====================================================
+        # CONDITION 3
+        # 15M < 30 -> CE +45
+        # ====================================================
+
+        if (
+            rsi_15m
+            <
+            RSI_15_EXTREME_OVERSOLD
+        ):
+
+            signals.append({
+
+                "condition_number": 3,
+
+                "condition_text":
+                    "15M < 30",
+
+                "strategy":
+                    "15M_CE",
+
+                "signal":
+                    "BULLISH",
+
+                "option_type":
+                    "CE",
+
+                "target_points":
+                    PAPER_15M_TARGET_POINTS,
+
+            })
+
+        # ====================================================
+        # CONDITION 4
+        # 15M > 70 -> PE +45
+        # ====================================================
+
+        if (
+            rsi_15m
+            >
+            RSI_15_EXTREME_OVERBOUGHT
+        ):
+
+            signals.append({
+
+                "condition_number": 4,
+
+                "condition_text":
+                    "15M > 70",
+
+                "strategy":
+                    "15M_PE",
+
+                "signal":
+                    "BEARISH",
+
+                "option_type":
+                    "PE",
+
+                "target_points":
+                    PAPER_15M_TARGET_POINTS,
+
+            })
+
+        # ====================================================
+        # CONDITION 5
+        # 1M < 20 AND 15M < 25 -> CE +75
+        # ====================================================
+
+        if (
+            rsi_1m < 20
+            and
+            rsi_15m < 25
+        ):
+
+            signals.append({
+
+                "condition_number": 5,
+
+                "condition_text":
+                    "1M < 20 AND 15M < 25",
+
+                "strategy":
+                    "COMBINED_CE",
+
+                "signal":
+                    "BULLISH",
+
+                "option_type":
+                    "CE",
+
+                "target_points":
+                    PAPER_COMBINED_TARGET_POINTS,
+
+            })
+
+        # ====================================================
+        # CONDITION 6
+        # 1M > 80 AND 15M > 75 -> PE +75
+        # ====================================================
+
+        if (
+            rsi_1m > 80
+            and
+            rsi_15m > 75
+        ):
+
+            signals.append({
+
+                "condition_number": 6,
+
+                "condition_text":
+                    "1M > 80 AND 15M > 75",
+
+                "strategy":
+                    "COMBINED_PE",
+
+                "signal":
+                    "BEARISH",
+
+                "option_type":
+                    "PE",
+
+                "target_points":
+                    PAPER_COMBINED_TARGET_POINTS,
+
+            })
+
+        return signals
+
+    # ========================================================
+    # NEAREST STRIKE
+    # ========================================================
+
+    def get_nearest_strike(
+        self,
+        signal
+    ):
+
+        price = float(
+            self.last_bank_nifty
+        )
+
+        step = (
+            PAPER_STRIKE_STEP
+        )
+
+        return (
+            round(
+                price / step
+            )
+            * step
+        )
+
+    # ========================================================
+    # OPTION LTP
+    # ========================================================
+
+    def get_option_ltp(
+        self,
+        option_type,
+        strike
+    ):
+
+        method = getattr(
+            self.historical,
+            "get_option_ltp",
+            None
+        )
+
+        if method is None:
+
+            return None
+
+        try:
+
+            result = method(
+                option_type=option_type,
+                strike=strike,
+            )
+
+            if not result:
+                return None
+
+            if not isinstance(
+                result,
+                dict
+            ):
+                return None
+
+            ltp = result.get(
+                "ltp"
+            )
+
+            symbol = result.get(
+                "trading_symbol"
+            )
+
+            if ltp is None:
+                return None
+
+            if symbol is None:
+                return None
+
+            return {
+
+                "trading_symbol":
+                    symbol,
+
+                "ltp":
+                    float(ltp),
+            }
+
+        except Exception:
+
+            return None
+
+    # ========================================================
+    # DISPLAY PAPER SIGNAL
+    # ========================================================
+
+    def display_paper_signal(
+        self,
+        signal,
+        strike,
+        option=None
+    ):
+
+        # Kept for future use.
+        # No normal RSI display.
+
+        pass
+
+    # ========================================================
+    # PRINT CONDITION MET
+    # ========================================================
+
+    def print_condition_met(
+        self,
+        signal
+    ):
+
+        print()
+        print("=" * 70)
+
+        print(
+            f"CONDITION {signal['condition_number']} MET"
+        )
+
+        print("=" * 70)
+
+        print(
+            f"Condition      : "
+            f"{signal['condition_text']}"
+        )
+
+        print(
+            f"Strategy       : "
+            f"{signal['strategy']}"
+        )
+
+        print(
+            f"Signal         : "
+            f"{signal['signal']}"
+        )
+
+        print(
+            f"Option         : "
+            f"{signal['option_type']}"
+        )
+
+        print(
+            f"Target Points  : "
+            f"+{signal['target_points']}"
+        )
+
+        print(
+            f"1M RSI         : "
+            f"{self.last_rsi_1m:.2f}"
+        )
+
+        print(
+            f"15M RSI        : "
+            f"{self.last_rsi_15m:.2f}"
+        )
+
+        print(
+            f"Bank Nifty     : "
+            f"{self.last_bank_nifty:,.2f}"
+        )
+
+        print(
+            f"Candle         : "
+            f"{self.last_candle_time}"
+        )
+
+        print("=" * 70)
+
+    # ========================================================
+    # PAPER TRADING
+    # ========================================================
+
+    def process_paper_trading(self):
+
+        if not PAPER_TRADING_ENABLED:
+            return
+
+        if self.paper_trader is None:
+            return
+
+        # ====================================================
+        # EXISTING OPEN TRADES
+        # ====================================================
+        #
+        # Existing trades continue to be monitored.
+        # This happens even after 15:00.
+        #
+        # New BUYs are restricted separately below.
+
+        open_trades = (
+            self.paper_trader
+            .get_open_trades()
+        )
+
+        option_prices = {}
+
+        get_price = getattr(
+            self.historical,
+            "get_option_ltp_by_symbol",
+            None
+        )
+
+        if get_price is not None:
+
+            for trade in open_trades:
+
+                trading_symbol = trade[5]
+
+                if not trading_symbol:
+                    continue
+
+                try:
+
+                    ltp = get_price(
+                        trading_symbol
+                    )
+
+                    if ltp is not None:
+
+                        option_prices[
+                            trading_symbol
+                        ] = float(ltp)
+
+                except Exception:
+
+                    continue
+
+        closed_trade_ids = []
+
+        if option_prices:
+
+            closed_trade_ids = (
+                self.paper_trader
+                .check_targets(
+                    option_prices
+                )
+            )
+
+        # ====================================================
+        # PAPER SELL
+        # ====================================================
+
+        for trade_id in closed_trade_ids:
+
+            print()
+            print("=" * 70)
+
+            print(
+                "PAPER SELL COMPLETED"
+            )
+
+            print(
+                f"Trade ID      : {trade_id}"
+            )
+
+            print(
+                f"1M RSI        : "
+                f"{self.last_rsi_1m:.2f}"
+            )
+
+            print(
+                f"15M RSI       : "
+                f"{self.last_rsi_15m:.2f}"
+            )
+
+            print(
+                f"Bank Nifty    : "
+                f"{self.last_bank_nifty:,.2f}"
+            )
+
+            print(
+                f"Candle        : "
+                f"{self.last_candle_time}"
+            )
+
+            print(
+                "REAL ORDER    : NO"
+            )
+
+            print("=" * 70)
+
+            self.send_paper_sell_email(
+                trade_id
+            )
+
+        # ====================================================
+        # NEW PAPER BUY SESSION
+        # ====================================================
+        #
+        # NO NEW BUY before 10:00
+        # NO NEW BUY at/after 15:00
+        #
+        # Existing trades above are still monitored.
+
+        if not self.is_paper_trading_session():
+
+            return
+
+        # ====================================================
+        # CURRENT SIX CONDITIONS
+        # ====================================================
+
+        signals = (
+            self.get_paper_signals()
+        )
+
+        if not signals:
+
+            return
+
+        # ====================================================
+        # PROCESS SIGNALS
+        # ====================================================
+
+        for signal in signals:
+
+            strategy = signal[
+                "strategy"
+            ]
+
+            signal_name = signal[
+                "signal"
+            ]
+
+            option_type = signal[
+                "option_type"
+            ]
+
+            target_points = signal[
+                "target_points"
+            ]
+
+            # ------------------------------------------------
+            # STRATEGY LOCK
+            # ------------------------------------------------
+            #
+            # If this strategy already has an OPEN trade,
+            # do not BUY again.
+            #
+            # Once the trade is SOLD, this check becomes
+            # available again automatically.
+
+            existing_trade = (
+                self.paper_trader
+                .get_open_trade(
+                    strategy
+                )
+            )
+
+            if existing_trade is not None:
+
+                continue
+
+            # ------------------------------------------------
+            # CONDITION MET
+            # ------------------------------------------------
+
+            self.print_condition_met(
+                signal
+            )
+
+            # ------------------------------------------------
+            # STRIKE
+            # ------------------------------------------------
+
+            strike = (
+                self.get_nearest_strike(
+                    signal_name
+                )
+            )
+
+            # ------------------------------------------------
+            # OPTION LTP
+            # ------------------------------------------------
+
+            option = (
+                self.get_option_ltp(
+                    option_type,
+                    strike
+                )
+            )
+
+            if option is None:
+
+                continue
+
+            trading_symbol = option[
+                "trading_symbol"
+            ]
+
+            entry_price = float(
+                option["ltp"]
+            )
+
+            target_price = (
+                entry_price
+                +
+                target_points
+            )
+
+            # ------------------------------------------------
+            # PAPER BUY
+            # ------------------------------------------------
+
+            opened = (
+                self.paper_trader
+                .open_trade(
+
+                    strategy=strategy,
+                    signal=signal_name,
+                    option_type=option_type,
+                    strike=strike,
+                    trading_symbol=trading_symbol,
+                    entry_price=entry_price,
+                    target_points=target_points,
+                    rsi_1m=self.last_rsi_1m,
+                    rsi_15m=self.last_rsi_15m,
+                    bank_nifty=self.last_bank_nifty,
+                )
+            )
+
+            # ------------------------------------------------
+            # CONFIRMED PAPER BUY
+            # ------------------------------------------------
+
+            if opened:
+
+                print()
+                print("=" * 70)
+
+                print(
+                    "PAPER BUY CREATED"
+                )
+
+                print(
+                    f"Condition      : "
+                    f"{signal['condition_number']} - "
+                    f"{signal['condition_text']}"
+                )
+
+                print(
+                    f"Strategy       : "
+                    f"{strategy}"
+                )
+
+                print(
+                    f"Signal         : "
+                    f"{signal_name}"
+                )
+
+                print(
+                    f"Option         : "
+                    f"{option_type}"
+                )
+
+                print(
+                    f"Strike         : "
+                    f"{strike}"
+                )
+
+                print(
+                    f"Trading Symbol : "
+                    f"{trading_symbol}"
+                )
+
+                print(
+                    f"Entry LTP      : "
+                    f"{entry_price:.2f}"
+                )
+
+                print(
+                    f"Target         : "
+                    f"{target_price:.2f}"
+                )
+
+                print(
+                    f"Target Points  : "
+                    f"+{target_points}"
+                )
+
+                print(
+                    f"1M RSI         : "
+                    f"{self.last_rsi_1m:.2f}"
+                )
+
+                print(
+                    f"15M RSI        : "
+                    f"{self.last_rsi_15m:.2f}"
+                )
+
+                print(
+                    f"Bank Nifty     : "
+                    f"{self.last_bank_nifty:,.2f}"
+                )
+
+                print(
+                    f"Candle         : "
+                    f"{self.last_candle_time}"
+                )
+
+                print(
+                    "REAL ORDER     : NO"
+                )
+
+                print("=" * 70)
+
+                trade = {
+
+                    "condition_number":
+                        signal[
+                            "condition_number"
+                        ],
+
+                    "condition_text":
+                        signal[
+                            "condition_text"
+                        ],
+
+                    "strategy":
+                        strategy,
+
+                    "signal":
+                        signal_name,
+
+                    "option_type":
+                        option_type,
+
+                    "strike":
+                        strike,
+
+                    "trading_symbol":
+                        trading_symbol,
+
+                    "entry_price":
+                        entry_price,
+
+                    "target_price":
+                        target_price,
+
+                    "target_points":
+                        target_points,
+                }
+
+                self.send_paper_purchase_email(
+                    trade
+                )
+
+    # ========================================================
+    # NORMAL DISPLAY
+    # ========================================================
+
+    def display(self):
+
+        # Normal RSI display remains disabled.
+        #
+        # Only PAPER BUY / PAPER SELL events are printed.
+
+        pass
+
+    # ========================================================
+    # PROCESS
+    # ========================================================
+
+    def process(self):
+
+        self.read_data()
+
+        # ----------------------------------------------------
+        # PAPER TRADING
+        # ----------------------------------------------------
+
+        self.process_paper_trading()
+
+        # ----------------------------------------------------
+        # NORMAL RSI DISPLAY DISABLED
+        # ----------------------------------------------------
+
+        # self.display()
+
+    # ========================================================
+    # RUN
+    # ========================================================
+
+    def run(self):
+
+        try:
+
+            while True:
+
+                try:
+
+                    self.process()
+
+                    time.sleep(
+                        CHECK_INTERVAL_SECONDS
+                    )
+
+                except Exception:
+
+                    # All routine monitor errors are silent.
+                    time.sleep(
+                        CHECK_INTERVAL_SECONDS
+                    )
+
+        except KeyboardInterrupt:
+
+            pass
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    monitor = (
+        ContinuousBankNiftyMonitor()
+    )
+
+    monitor.run()
+
+
+if __name__ == "__main__":
+
+    main()
+"""
+Bank Nifty RSI Monitor
+
+Reads Bank Nifty historical candles from Groww
+and calculates:
+
+1-minute RSI(14)
+15-minute RSI(14)
+
+ALERT ONLY
+No orders.
+"""
+
+from datetime import datetime
+
+from data.historical_data import GrowwHistoricalData
+from indicators.rsi import (
+    candle_closes_to_series,
+    calculate_latest_rsi,
+)
+
+
+# ============================================================
+# RSI MONITOR
+# ============================================================
+
+class BankNiftyRSIMonitor:
+
+    def __init__(self):
+
+        self.market_data = (
+            GrowwHistoricalData()
+        )
+
+    # ========================================================
+    # CALCULATE RSI
+    # ========================================================
+
+    def calculate(self):
+
+        print()
+        print("=" * 70)
+        print("BANK NIFTY RSI MONITOR")
+        print("=" * 70)
+
+        # ----------------------------------------------------
+        # Get Groww candles
+        # ----------------------------------------------------
+
+        one_minute_data = (
+            self.market_data
+            .get_1_minute_candles()
+        )
+
+        fifteen_minute_data = (
+            self.market_data
+            .get_15_minute_candles()
+        )
+
+        # ----------------------------------------------------
+        # Extract candles
+        # ----------------------------------------------------
+
+        candles_1m = (
+            one_minute_data
+            .get("candles", [])
+        )
+
+        candles_15m = (
+            fifteen_minute_data
+            .get("candles", [])
+        )
+
+        if not candles_1m:
+            raise ValueError(
+                "No 1-minute candles received."
+            )
+
+        if not candles_15m:
+            raise ValueError(
+                "No 15-minute candles received."
+            )
+
+        # ----------------------------------------------------
+        # Convert closes
+        # ----------------------------------------------------
+
+        closes_1m = (
+            candle_closes_to_series(
+                candles_1m
+            )
+        )
+
+        closes_15m = (
+            candle_closes_to_series(
+                candles_15m
+            )
+        )
+
+        # ----------------------------------------------------
+        # Calculate RSI
+        # ----------------------------------------------------
+
+        rsi_1m = calculate_latest_rsi(
+            closes_1m,
+            period=14,
+        )
+
+        rsi_15m = calculate_latest_rsi(
+            closes_15m,
+            period=14,
+        )
+
+        # ----------------------------------------------------
+        # Latest Bank Nifty price
+        # ----------------------------------------------------
+
+        bank_nifty = float(
+            candles_1m[-1][4]
+        )
+
+        timestamp = candles_1m[-1][0]
+
+        # ----------------------------------------------------
+        # Display
+        # ----------------------------------------------------
+
+        print()
+        print(
+            "Candle Time       :",
+            timestamp
+        )
+
+        print(
+            "Bank Nifty        :",
+            f"{bank_nifty:,.2f}"
+        )
+
+        print(
+            "1M RSI(14)        :",
+            f"{rsi_1m:.2f}"
+        )
+
+        print(
+            "15M RSI(14)       :",
+            f"{rsi_15m:.2f}"
+        )
+
+        print()
+        print(
+            "Local Check Time  :",
+            datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        )
+
+        print()
+        print("=" * 70)
+
+        return {
+            "timestamp": timestamp,
+            "bank_nifty": bank_nifty,
+            "rsi_1m": rsi_1m,
+            "rsi_15m": rsi_15m,
+        }
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    try:
+
+        monitor = BankNiftyRSIMonitor()
+
+        result = monitor.calculate()
+
+        print()
+        print("RSI CALCULATION : SUCCESS")
+
+        print()
+        print(result)
+
+    except Exception as error:
+
+        print()
+        print("=" * 70)
+        print("RSI MONITOR FAILED")
+        print("=" * 70)
+
+        print(
+            "Error type:",
+            type(error).__name__
+        )
+
+        print(
+            "Error:",
+            error
+        )
+
+        print("=" * 70)
+
+
+if __name__ == "__main__":
+    main()
+"""
+Bank Nifty Historical Data
+
+Purpose
+-------
+Fetch Bank Nifty historical candles for RSI calculation.
+
+Date selection
+--------------
+Before 09:00 IST:
+    Use previous trading day.
+
+From 09:00 IST onward:
+    Use today's data.
+
+RSI warm-up
+------------
+For the current trading day, previous trading-day candles
+are automatically added when required to provide enough
+history for RSI(14).
+
+Current candle
+--------------
+The latest candle from TODAY remains the latest/current candle.
+
+Example at 10:51:
+
+1-minute:
+    Previous-day warm-up
+    +
+    Today 09:15 -> 10:51
+
+15-minute:
+    Previous-day warm-up
+    +
+    Today 09:15 -> 10:45
+
+The latest 15-minute candle remains 10:45.
+"""
+
+from datetime import (
+    datetime,
+    timedelta,
+)
+
+import calendar
+
+import contextlib
+import io
+
+from growwapi import GrowwAPI
+
+from config.settings import (
+    GROWW_API_KEY,
+    GROWW_API_SECRET,
+
+    DATA_SELECTION_TIME,
+
+    HISTORICAL_START_TIME,
+    HISTORICAL_END_TIME,
+
+    HISTORICAL_LOOKBACK_DAYS,
+
+    RSI_PERIOD,
+)
+
+
+class GrowwHistoricalData:
+
+    def __init__(self):
+
+        self.groww = None
+
+        # Actual trading date being monitored.
+        self.data_date = None
+
+    # ========================================================
+    # CONNECT
+    # ========================================================
+
+    def connect(self):
+
+        with contextlib.redirect_stdout(
+            io.StringIO()
+        ):
+
+            access_token = (
+                GrowwAPI.get_access_token(
+                    api_key=GROWW_API_KEY,
+                    secret=GROWW_API_SECRET,
+                )
+            )
+
+            self.groww = GrowwAPI(
+                access_token
+            )
+
+    # ========================================================
+    # CURRENT DATE
+    # ========================================================
+
+    @staticmethod
+    def get_selected_date():
+
+        now = datetime.now()
+
+        selection_time = (
+            datetime.strptime(
+                DATA_SELECTION_TIME,
+                "%H:%M",
+            ).time()
+        )
+
+        today = now.date()
+
+        # ----------------------------------------------------
+        # Before 09:00
+        # ----------------------------------------------------
+
+        if now.time() < selection_time:
+
+            return (
+                today
+                -
+                timedelta(days=1)
+            )
+
+        # ----------------------------------------------------
+        # 09:00 onward
+        # ----------------------------------------------------
+
+        return today
+
+    # ========================================================
+    # MARKET TIMES
+    # ========================================================
+
+    @staticmethod
+    def get_market_times(
+        selected_date=None,
+    ):
+
+        if selected_date is None:
+
+            selected_date = (
+                GrowwHistoricalData
+                .get_selected_date()
+            )
+
+        start_clock = (
+            datetime.strptime(
+                HISTORICAL_START_TIME,
+                "%H:%M",
+            ).time()
+        )
+
+        end_clock = (
+            datetime.strptime(
+                HISTORICAL_END_TIME,
+                "%H:%M",
+            ).time()
+        )
+
+        start_time = datetime.combine(
+            selected_date,
+            start_clock,
+        )
+
+        end_time = datetime.combine(
+            selected_date,
+            end_clock,
+        )
+
+        return (
+            start_time.strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
+            end_time.strftime(
+                "%Y-%m-%d %H:%M:%S"
+            ),
+        )
+
+    # ========================================================
+    # REQUEST 1-MINUTE DATA
+    # ========================================================
+
+    def _request_1_minute(
+        self,
+        selected_date,
+    ):
+
+        start_time, end_time = (
+            self.get_market_times(
+                selected_date
+            )
+        )
+
+        return (
+            self.groww
+            .get_historical_candles(
+
+                exchange=(
+                    self.groww.EXCHANGE_NSE
+                ),
+
+                segment=(
+                    self.groww.SEGMENT_CASH
+                ),
+
+                groww_symbol=(
+                    "NSE-BANKNIFTY"
+                ),
+
+                start_time=start_time,
+
+                end_time=end_time,
+
+                candle_interval=(
+                    self.groww
+                    .CANDLE_INTERVAL_MIN_1
+                ),
+            )
+        )
+
+    # ========================================================
+    # REQUEST 15-MINUTE DATA
+    # ========================================================
+
+    def _request_15_minute(
+        self,
+        selected_date,
+    ):
+
+        start_time, end_time = (
+            self.get_market_times(
+                selected_date
+            )
+        )
+
+        return (
+            self.groww
+            .get_historical_candles(
+
+                exchange=(
+                    self.groww.EXCHANGE_NSE
+                ),
+
+                segment=(
+                    self.groww.SEGMENT_CASH
+                ),
+
+                groww_symbol=(
+                    "NSE-BANKNIFTY"
+                ),
+
+                start_time=start_time,
+
+                end_time=end_time,
+
+                candle_interval=(
+                    self.groww
+                    .CANDLE_INTERVAL_MIN_15
+                ),
+            )
+        )
+
+    # ========================================================
+    # CHECK CANDLES
+    # ========================================================
+
+    @staticmethod
+    def _get_candles(
+        data,
+    ):
+
+        if not data:
+
+            return []
+
+        return data.get(
+            "candles",
+            []
+        )
+
+    # ========================================================
+    # CANDLE TIMESTAMP
+    # ========================================================
+
+    @staticmethod
+    def _candle_timestamp(
+        candle,
+    ):
+
+        if not candle:
+
+            return None
+
+        return candle[0]
+
+    # ========================================================
+    # COMBINE CANDLES
+    # ========================================================
+
+    @staticmethod
+    def _combine_candles(
+        previous_candles,
+        current_candles,
+    ):
+
+        combined = []
+
+        seen = set()
+
+        for candle in (
+            previous_candles
+            +
+            current_candles
+        ):
+
+            timestamp = (
+                GrowwHistoricalData
+                ._candle_timestamp(
+                    candle
+                )
+            )
+
+            if timestamp is None:
+
+                continue
+
+            if timestamp in seen:
+
+                continue
+
+            seen.add(
+                timestamp
+            )
+
+            combined.append(
+                candle
+            )
+
+        # ----------------------------------------------------
+        # Chronological order
+        # ----------------------------------------------------
+
+        combined.sort(
+            key=lambda x: x[0]
+        )
+
+        return combined
+
+    # ========================================================
+    # FIND PREVIOUS TRADING DAY
+    # ========================================================
+
+    def _get_previous_trading_day(
+        self,
+        current_date,
+    ):
+
+        for offset in range(
+            1,
+            HISTORICAL_LOOKBACK_DAYS + 1,
+        ):
+
+            candidate_date = (
+                current_date
+                -
+                timedelta(days=offset)
+            )
+
+            data_15m = (
+                self._request_15_minute(
+                    candidate_date
+                )
+            )
+
+            candles = (
+                self._get_candles(
+                    data_15m
+                )
+            )
+
+            if candles:
+
+                return candidate_date
+
+        return None
+
+    # ========================================================
+    # GET PREVIOUS DAY WARM-UP
+    # ========================================================
+
+    def _get_warmup_data(
+        self,
+        current_date,
+    ):
+
+        previous_date = (
+            self._get_previous_trading_day(
+                current_date
+            )
+        )
+
+        if previous_date is None:
+
+            return (
+                [],
+                [],
+                None,
+            )
+
+        previous_1m = (
+            self._request_1_minute(
+                previous_date
+            )
+        )
+
+        previous_15m = (
+            self._request_15_minute(
+                previous_date
+            )
+        )
+
+        return (
+            self._get_candles(
+                previous_1m
+            ),
+            self._get_candles(
+                previous_15m
+            ),
+            previous_date,
+        )
+
+    # ========================================================
+    # FIND DATA DATE BEFORE 09:00
+    # ========================================================
+
+    def _find_previous_data_date(
+        self,
+    ):
+
+        selected_date = (
+            self.get_selected_date()
+        )
+
+        for offset in range(
+            HISTORICAL_LOOKBACK_DAYS
+        ):
+
+            candidate = (
+                selected_date
+                -
+                timedelta(days=offset)
+            )
+
+            data = (
+                self._request_1_minute(
+                    candidate
+                )
+            )
+
+            candles = (
+                self._get_candles(
+                    data
+                )
+            )
+
+            if candles:
+
+                return candidate
+
+        raise ValueError(
+            "No Bank Nifty historical data "
+            "found within configured lookback."
+        )
+
+    # ========================================================
+    # 1-MINUTE DATA
+    # ========================================================
+
+    def get_1_minute_candles(
+        self,
+    ):
+
+        if self.groww is None:
+
+            self.connect()
+
+        selected_date = (
+            self.get_selected_date()
+        )
+
+        # ----------------------------------------------------
+        # Before 09:00
+        # ----------------------------------------------------
+
+        now = datetime.now()
+
+        selection_time = (
+            datetime.strptime(
+                DATA_SELECTION_TIME,
+                "%H:%M",
+            ).time()
+        )
+
+        if now.time() < selection_time:
+
+            self.data_date = (
+                self._find_previous_data_date()
+            )
+
+            return (
+                self._request_1_minute(
+                    self.data_date
+                )
+            )
+
+        # ----------------------------------------------------
+        # 09:00 onward
+        # ----------------------------------------------------
+
+        self.data_date = (
+            selected_date
+        )
+
+        current_data = (
+            self._request_1_minute(
+                selected_date
+            )
+        )
+
+        current_candles = (
+            self._get_candles(
+                current_data
+            )
+        )
+
+        # ----------------------------------------------------
+        # No current data
+        # ----------------------------------------------------
+
+        if not current_candles:
+
+            self.data_date = (
+                self._find_previous_data_date()
+            )
+
+            return (
+                self._request_1_minute(
+                    self.data_date
+                )
+            )
+
+        # ----------------------------------------------------
+        # Warm-up only needed if insufficient candles
+        # ----------------------------------------------------
+
+        minimum_candles = (
+            RSI_PERIOD + 1
+        )
+
+        if len(current_candles) >= (
+            minimum_candles
+        ):
+
+            return {
+                "candles":
+                    current_candles
+            }
+
+        # ----------------------------------------------------
+        # Previous trading day
+        # ----------------------------------------------------
+
+        (
+            previous_1m,
+            _,
+            previous_date,
+        ) = self._get_warmup_data(
+            selected_date
+        )
+
+        combined = (
+            self._combine_candles(
+                previous_1m,
+                current_candles,
+            )
+        )
+
+        print()
+        print(
+            "1M RSI warm-up:"
+        )
+
+        print(
+            "  Previous date :",
+            previous_date
+        )
+
+        print(
+            "  Previous      :",
+            len(previous_1m)
+        )
+
+        print(
+            "  Today         :",
+            len(current_candles)
+        )
+
+        print(
+            "  Total         :",
+            len(combined)
+        )
+
+        return {
+            "candles":
+                combined
+        }
+
+    # ========================================================
+    # 15-MINUTE DATA
+    # ========================================================
+
+    def get_15_minute_candles(
+        self,
+    ):
+
+        if self.groww is None:
+
+            self.connect()
+
+        selected_date = (
+            self.get_selected_date()
+        )
+
+        # ----------------------------------------------------
+        # Before 09:00
+        # ----------------------------------------------------
+
+        now = datetime.now()
+
+        selection_time = (
+            datetime.strptime(
+                DATA_SELECTION_TIME,
+                "%H:%M",
+            ).time()
+        )
+
+        if now.time() < selection_time:
+
+            self.data_date = (
+                self._find_previous_data_date()
+            )
+
+            return (
+                self._request_15_minute(
+                    self.data_date
+                )
+            )
+
+        # ----------------------------------------------------
+        # Today's data
+        # ----------------------------------------------------
+
+        self.data_date = (
+            selected_date
+        )
+
+        current_data = (
+            self._request_15_minute(
+                selected_date
+            )
+        )
+
+        current_candles = (
+            self._get_candles(
+                current_data
+            )
+        )
+
+        # ----------------------------------------------------
+        # No current data
+        # ----------------------------------------------------
+
+        if not current_candles:
+
+            self.data_date = (
+                self._find_previous_data_date()
+            )
+
+            return (
+                self._request_15_minute(
+                    self.data_date
+                )
+            )
+
+        # ----------------------------------------------------
+        # RSI(14) requires at least 15 prices.
+        #
+        # At 10:51 today we only have:
+        #
+        # 09:15
+        # 09:30
+        # 09:45
+        # 10:00
+        # 10:15
+        # 10:30
+        # 10:45
+        #
+        # Therefore previous-day warm-up is required.
+        # ----------------------------------------------------
+
+        minimum_candles = (
+            RSI_PERIOD + 1
+        )
+
+        if len(current_candles) >= (
+            minimum_candles
+        ):
+
+            return {
+                "candles":
+                    current_candles
+            }
+
+        # ----------------------------------------------------
+        # Get previous trading day
+        # ----------------------------------------------------
+
+        (
+            _,
+            previous_15m,
+            previous_date,
+        ) = self._get_warmup_data(
+            selected_date
+        )
+
+        # ----------------------------------------------------
+        # Combine
+        # ----------------------------------------------------
+
+        combined = (
+            self._combine_candles(
+                previous_15m,
+                current_candles,
+            )
+        )
+
+        print()
+        print(
+            "15M RSI warm-up:"
+        )
+
+        print(
+            "  Previous date :",
+            previous_date
+        )
+
+        print(
+            "  Previous      :",
+            len(previous_15m)
+        )
+
+        print(
+            "  Today         :",
+            len(current_candles)
+        )
+
+        print(
+            "  Total         :",
+            len(combined)
+        )
+
+        return {
+            "candles":
+                combined
+        }
+
+    # ========================================================
+    # NEXT AVAILABLE BANK NIFTY EXPIRY
+    # ========================================================
+
+    def _get_next_bank_nifty_expiry(self):
+
+        if self.groww is None:
+
+            self.connect()
+
+        today = datetime.now().date()
+
+        expiries = []
+
+        year = today.year
+        month = today.month
+
+        for offset in range(3):
+
+            month_index = month - 1 + offset
+            request_year = year + (month_index // 12)
+            request_month = (month_index % 12) + 1
+
+            try:
+
+                response = self.groww.get_expiries(
+                    exchange=self.groww.EXCHANGE_NSE,
+                    underlying_symbol="BANKNIFTY",
+                    year=request_year,
+                    month=request_month,
+                )
+
+                values = response.get("expiries", []) if response else []
+
+                expiries.extend(values)
+
+            except Exception:
+
+                continue
+
+        valid = []
+
+        for expiry in expiries:
+
+            try:
+                expiry_date = datetime.strptime(
+                    expiry,
+                    "%Y-%m-%d",
+                ).date()
+
+                if expiry_date >= today:
+                    valid.append((expiry_date, expiry))
+
+            except (TypeError, ValueError):
+
+                continue
+
+        if not valid:
+
+            raise RuntimeError(
+                "No future BANKNIFTY expiry found."
+            )
+
+        valid.sort(key=lambda item: item[0])
+
+        return valid[0][1]
+
+    # ========================================================
+    # OPTION LTP BY STRIKE
+    # ========================================================
+
+    def get_option_ltp(
+        self,
+        option_type,
+        strike,
+    ):
+
+        if self.groww is None:
+
+            self.connect()
+
+        expiry = self._get_next_bank_nifty_expiry()
+
+        response = self.get_bank_nifty_option_chain(
+            expiry
+        )
+
+        if not response:
+            return None
+
+        # SDK responses are normally already flattened, but
+        # support a payload wrapper as well.
+        payload = response.get("payload", response)
+
+        strikes = payload.get("strikes", {}) if isinstance(payload, dict) else {}
+
+        if not strikes:
+            return None
+
+        requested = float(strike)
+        selected_key = None
+
+        for key in strikes.keys():
+
+            try:
+                numeric_key = float(key)
+            except (TypeError, ValueError):
+                continue
+
+            if numeric_key == requested:
+                selected_key = key
+                break
+
+        if selected_key is None:
+            return None
+
+        contract = strikes.get(selected_key, {})
+
+        if option_type not in contract:
+            return None
+
+        option = contract[option_type]
+
+        if not isinstance(option, dict):
+            return None
+
+        ltp = option.get("ltp")
+        trading_symbol = option.get("trading_symbol")
+
+        if ltp is None or not trading_symbol:
+            return None
+
+        return {
+            "trading_symbol": trading_symbol,
+            "ltp": float(ltp),
+            "expiry": expiry,
+        }
+
+    # ========================================================
+    # OPTION LTP BY TRADING SYMBOL
+    # ========================================================
+
+    def get_option_ltp_by_symbol(
+        self,
+        trading_symbol,
+    ):
+
+        if self.groww is None:
+
+            self.connect()
+
+        if not trading_symbol:
+            return None
+
+        exchange_symbol = (
+            f"NSE_{trading_symbol}"
+        )
+
+        response = self.groww.get_ltp(
+            segment=self.groww.SEGMENT_FNO,
+            exchange_trading_symbols=(
+                exchange_symbol,
+            ),
+        )
+
+        if not response:
+            return None
+
+        payload = response.get(
+            "payload",
+            response,
+        )
+
+        if not isinstance(payload, dict):
+            return None
+
+        value = payload.get(
+            exchange_symbol
+        )
+
+        if value is None:
+            # Some SDK versions may return the bare trading symbol.
+            value = payload.get(
+                trading_symbol
+            )
+
+        if value is None:
+            return None
+
+        if isinstance(value, dict):
+            value = value.get("ltp")
+
+        if value is None:
+            return None
+
+        return float(value)
+
+    # ========================================================
+    # OPTION CHAIN
+    # ========================================================
+
+    def get_bank_nifty_option_chain(
+        self,
+        expiry_date,
+    ):
+
+        if self.groww is None:
+
+            self.connect()
+
+        return (
+            self.groww
+            .get_option_chain(
+
+                exchange=(
+                    self.groww.EXCHANGE_NSE
+                ),
+
+                underlying="BANKNIFTY",
+
+                expiry_date=expiry_date,
+            )
+        )
+
+    # ========================================================
+    # DISPLAY 1M
+    # ========================================================
+
+    @staticmethod
+    def display_1_minute(
+        data,
+    ):
+
+        candles = (
+            data.get(
+                "candles",
+                []
+            )
+        )
+
+        print()
+        print("=" * 70)
+        print("1-MINUTE DATA")
+        print("=" * 70)
+
+        print(
+            "Number of candles:",
+            len(candles)
+        )
+
+        if not candles:
+
+            print(
+                "No 1-minute candles found."
+            )
+
+            return
+
+        print()
+        print("First candle:")
+
+        print(
+            candles[0]
+        )
+
+        print()
+        print("Last candle:")
+
+        print(
+            candles[-1]
+        )
+
+    # ========================================================
+    # DISPLAY 15M
+    # ========================================================
+
+    @staticmethod
+    def display_15_minute(
+        data,
+    ):
+
+        candles = (
+            data.get(
+                "candles",
+                []
+            )
+        )
+
+        print()
+        print("=" * 70)
+        print("15-MINUTE DATA")
+        print("=" * 70)
+
+        print(
+            "Number of candles:",
+            len(candles)
+        )
+
+        if not candles:
+
+            print(
+                "No 15-minute candles found."
+            )
+
+            return
+
+        print()
+        print("First candle:")
+
+        print(
+            candles[0]
+        )
+
+        print()
+        print("Last candle:")
+
+        print(
+            candles[-1]
+        )
+
+    # ========================================================
+    # TEST
+    # ========================================================
+
+    def test(self):
+
+        print()
+        print("=" * 70)
+        print(
+            "BANK NIFTY HISTORICAL DATA TEST"
+        )
+        print("=" * 70)
+
+        print()
+        print(
+            "Current Time:",
+            datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        )
+
+        print(
+            "Selected Date:",
+            self.get_selected_date()
+        )
+
+        one_minute = (
+            self.get_1_minute_candles()
+        )
+
+        fifteen_minute = (
+            self.get_15_minute_candles()
+        )
+
+        self.display_1_minute(
+            one_minute
+        )
+
+        self.display_15_minute(
+            fifteen_minute
+        )
+
+        print()
+        print(
+            "Selected Data Date:",
+            self.data_date
+        )
+
+        return (
+            one_minute,
+            fifteen_minute,
+        )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    try:
+
+        historical = (
+            GrowwHistoricalData()
+        )
+
+        historical.test()
+
+        print()
+        print("=" * 70)
+        print(
+            "HISTORICAL DATA TEST : SUCCESS"
+        )
+        print("=" * 70)
+
+    except Exception as error:
+
+        print()
+        print("=" * 70)
+        print(
+            "HISTORICAL DATA TEST : FAILED"
+        )
+        print("=" * 70)
+
+        print(
+            "Error type:",
+            type(error).__name__
+        )
+
+        print(
+            "Error:",
+            error
+        )
+
+        print("=" * 70)
+
+
+if __name__ == "__main__":
+
+    main()

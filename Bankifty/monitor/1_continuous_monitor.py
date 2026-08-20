@@ -4,7 +4,7 @@ Bank Nifty Continuous RSI Monitor
 REAL MARKET DATA
 PAPER / VIRTUAL TRADING ONLY
 
-Six independent paper-trading triggers:
+SIX INDEPENDENT PAPER-TRADING TRIGGERS
 
 1. 1M <= 30
        CE
@@ -14,23 +14,44 @@ Six independent paper-trading triggers:
        PE
        Target = Entry + 15
 
-3. 15M < 20
+3. 15M < 30
        CE
-       Target = Entry + 100
+       Target = Entry + 45
 
-4. 15M > 80
+4. 15M > 70
        PE
-       Target = Entry + 100
+       Target = Entry + 45
 
-5. 1M <= 30 AND 15M <= 40
+5. 1M < 20
+   AND
+   15M < 25
        CE
-       Target = Entry + 50
+       Target = Entry + 75
 
-6. 1M >= 70 AND 15M >= 60
+6. 1M > 80
+   AND
+   15M > 75
        PE
-       Target = Entry + 50
+       Target = Entry + 75
 
-No real orders are placed.
+
+SIX INDEPENDENT STRATEGY LOCKS
+
+1M_CE
+1M_PE
+15M_CE
+15M_PE
+COMBINED_CE
+COMBINED_PE
+
+A strategy cannot BUY again while its own trade is OPEN.
+
+After that trade is SOLD, that strategy becomes available again.
+
+NEW PAPER BUYs:
+10:00 AM to 3:00 PM IST only.
+
+NO REAL ORDERS ARE PLACED.
 """
 
 import time
@@ -57,11 +78,6 @@ from notifications.email import (
 from paper_trading.trade_manager import (
     PaperTradeManager
 )
-
-from news.service import (
-    NewsService
-)
-
 
 from config.settings import (
 
@@ -102,15 +118,6 @@ from config.settings import (
     # ========================================================
 
     EMAIL_ENABLED,
-    EMAIL_ON_CONDITION,
-    EMAIL_ON_NO_CONDITION,
-
-    NO_CONDITION_EMAIL_INTERVAL_MINUTES,
-
-    EMAIL_OUTSIDE_MARKET,
-    EMAIL_ON_MARKET_CLOSE,
-
-    EMAIL_DUPLICATE_PROTECTION,
 
     EMAIL_ON_PAPER_PURCHASE,
     EMAIL_ON_PAPER_SELL,
@@ -203,36 +210,6 @@ class ContinuousBankNiftyMonitor:
         self.last_candle_time = None
 
         self.data_date = None
-
-        # ----------------------------------------------------
-        # RSI CONDITION EMAIL PROTECTION
-        # ----------------------------------------------------
-
-        self.last_conditions = set()
-
-        self.last_no_condition_email = None
-
-        self.last_close_email_date = None
-
-        self.last_outside_email_date = None
-
-        # ----------------------------------------------------
-        # NEWS BACKGROUND COLLECTION
-        # ----------------------------------------------------
-        #
-        # NewsService reads NEWS_ENABLED and the configured
-        # collection interval from ai/config.py.
-        #
-        # News runs independently from the market loop.
-        # RSS/network delays cannot block RSI, SIC, or
-        # paper trading.
-
-        self.news = NewsService()
-
-        if self.news.enabled:
-
-            self.news.start()
-
 
     # ========================================================
     # CURRENT TIME
@@ -328,6 +305,12 @@ class ContinuousBankNiftyMonitor:
     # ========================================================
     # PAPER TRADING SESSION
     # ========================================================
+    #
+    # NEW PAPER BUYs are allowed ONLY:
+    #
+    # 10:00 <= time < 15:00
+    #
+    # Existing OPEN trades can continue to be monitored.
 
     def is_paper_trading_session(self):
 
@@ -335,22 +318,21 @@ class ContinuousBankNiftyMonitor:
             self.now().time()
         )
 
-        market_open = (
-            self.parse_time(
-                MARKET_OPEN_TIME
-            )
+        paper_start = dt_time(
+            10,
+            0
         )
 
-        market_close = (
-            self.parse_time(
-                MARKET_CLOSE_TIME
-            )
+        paper_end = dt_time(
+            15,
+            0
         )
 
         return (
-            market_open
+            paper_start
             <= current_time
-            < market_close
+            <
+            paper_end
         )
 
     # ========================================================
@@ -446,6 +428,7 @@ class ContinuousBankNiftyMonitor:
         conditions = set()
 
         # ----------------------------------------------------
+        # CONDITION 1
         # 1M <= 30
         # ----------------------------------------------------
 
@@ -460,6 +443,7 @@ class ContinuousBankNiftyMonitor:
             )
 
         # ----------------------------------------------------
+        # CONDITION 2
         # 1M >= 70
         # ----------------------------------------------------
 
@@ -474,7 +458,8 @@ class ContinuousBankNiftyMonitor:
             )
 
         # ----------------------------------------------------
-        # 15M < 20
+        # CONDITION 3
+        # 15M < 30
         # ----------------------------------------------------
 
         if (
@@ -488,7 +473,8 @@ class ContinuousBankNiftyMonitor:
             )
 
         # ----------------------------------------------------
-        # 15M > 80
+        # CONDITION 4
+        # 15M > 70
         # ----------------------------------------------------
 
         if (
@@ -502,19 +488,17 @@ class ContinuousBankNiftyMonitor:
             )
 
         # ----------------------------------------------------
-        # 1M <= 30 AND 15M <= 40
+        # CONDITION 5
+        #
+        # 1M < 20
+        # AND
+        # 15M < 25
         # ----------------------------------------------------
 
         if (
-            rsi_1m
-            <=
-            RSI_1_BULLISH
-
+            rsi_1m < 20
             and
-
-            rsi_15m
-            <=
-            RSI_15_BULLISH
+            rsi_15m < 25
         ):
 
             conditions.add(
@@ -522,19 +506,17 @@ class ContinuousBankNiftyMonitor:
             )
 
         # ----------------------------------------------------
-        # 1M >= 70 AND 15M >= 60
+        # CONDITION 6
+        #
+        # 1M > 80
+        # AND
+        # 15M > 75
         # ----------------------------------------------------
 
         if (
-            rsi_1m
-            >=
-            RSI_1_BEARISH
-
+            rsi_1m > 80
             and
-
-            rsi_15m
-            >=
-            RSI_15_BEARISH
+            rsi_15m > 75
         ):
 
             conditions.add(
@@ -542,41 +524,6 @@ class ContinuousBankNiftyMonitor:
             )
 
         return conditions
-
-    # ========================================================
-    # CONDITION NAME
-    # ========================================================
-
-    @staticmethod
-    def condition_name(
-        condition
-    ):
-
-        names = {
-
-            "1M_OVERSOLD":
-                "1M OVERSOLD",
-
-            "1M_OVERBOUGHT":
-                "1M OVERBOUGHT",
-
-            "15M_EXTREME_OVERSOLD":
-                "15M EXTREME OVERSOLD",
-
-            "15M_EXTREME_OVERBOUGHT":
-                "15M EXTREME OVERBOUGHT",
-
-            "BULLISH":
-                "BULLISH",
-
-            "BEARISH":
-                "BEARISH",
-        }
-
-        return names.get(
-            condition,
-            condition
-        )
 
     # ========================================================
     # RESULT
@@ -593,104 +540,6 @@ class ContinuousBankNiftyMonitor:
         )
 
     # ========================================================
-    # STATUS
-    # ========================================================
-
-    def get_report_status(
-        self,
-        conditions
-    ):
-
-        market_state = (
-            self.get_market_state()
-        )
-
-        if "BULLISH" in conditions:
-
-            return (
-                "BULLISH - "
-                f"{market_state}"
-            )
-
-        if "BEARISH" in conditions:
-
-            return (
-                "BEARISH - "
-                f"{market_state}"
-            )
-
-        bullish_15m = (
-            self.last_rsi_15m
-            <=
-            RSI_15_BULLISH
-        )
-
-        bullish_1m = (
-            self.last_rsi_1m
-            <=
-            RSI_1_BULLISH
-        )
-
-        if (
-            bullish_15m
-            and
-            not bullish_1m
-        ):
-
-            return (
-                "PARTIAL BULLISH - "
-                f"{market_state}"
-            )
-
-        bearish_15m = (
-            self.last_rsi_15m
-            >=
-            RSI_15_BEARISH
-        )
-
-        bearish_1m = (
-            self.last_rsi_1m
-            >=
-            RSI_1_BEARISH
-        )
-
-        if (
-            bearish_15m
-            and
-            not bearish_1m
-        ):
-
-            return (
-                "PARTIAL BEARISH - "
-                f"{market_state}"
-            )
-
-        if (
-            "15M_EXTREME_OVERSOLD"
-            in conditions
-        ):
-
-            return (
-                "EXTREME OVERSOLD - "
-                f"{market_state}"
-            )
-
-        if (
-            "15M_EXTREME_OVERBOUGHT"
-            in conditions
-        ):
-
-            return (
-                "EXTREME OVERBOUGHT - "
-                f"{market_state}"
-            )
-
-        return (
-            "NO CONDITION - "
-            f"{market_state}"
-        )
-
-    # ========================================================
     # FULL RSI REPORT
     # ========================================================
 
@@ -700,55 +549,38 @@ class ContinuousBankNiftyMonitor:
     ):
 
         rsi_1m = self.last_rsi_1m
-
         rsi_15m = self.last_rsi_15m
 
         c1 = (
-            rsi_1m
-            <=
-            RSI_1_BULLISH
+            rsi_1m <= 30
         )
 
         c2 = (
-            rsi_1m
-            >=
-            RSI_1_BEARISH
+            rsi_1m >= 70
         )
 
         c3 = (
-            rsi_15m
-            <
-            RSI_15_EXTREME_OVERSOLD
+            rsi_15m < 30
         )
 
         c4 = (
-            rsi_15m
-            >
-            RSI_15_EXTREME_OVERBOUGHT
+            rsi_15m > 70
         )
 
         c5_1m = (
-            rsi_1m
-            <=
-            RSI_1_BULLISH
+            rsi_1m < 20
         )
 
         c5_15m = (
-            rsi_15m
-            <=
-            RSI_15_BULLISH
+            rsi_15m < 25
         )
 
         c6_1m = (
-            rsi_1m
-            >=
-            RSI_1_BEARISH
+            rsi_1m > 80
         )
 
         c6_15m = (
-            rsi_15m
-            >=
-            RSI_15_BEARISH
+            rsi_15m > 75
         )
 
         generated_time = (
@@ -759,7 +591,7 @@ class ContinuousBankNiftyMonitor:
 
         return (
 
-            "=" * 66
+            "=" * 90
             + "\n"
 
             + "              BANK NIFTY RSI - "
@@ -767,64 +599,58 @@ class ContinuousBankNiftyMonitor:
 
             + "\n"
 
-            + "=" * 66
+            + "=" * 90
             + "\n\n"
 
             + "============================= 1 MIN ===============================\n"
 
-            + f"1) 1M <= {RSI_1_BULLISH} → "
+            + f"1) 1M <= 30 → "
             + f"{self.result(c1)}\n"
 
-            + f"2) 1M >= {RSI_1_BEARISH} → "
+            + f"2) 1M >= 70 → "
             + f"{self.result(c2)}\n\n"
 
             + "============================ 15 MIN ===============================\n"
 
-            + f"3) 15M < {RSI_15_EXTREME_OVERSOLD} → "
+            + f"3) 15M < 30 → "
             + f"{self.result(c3)}\n"
 
-            + f"4) 15M > {RSI_15_EXTREME_OVERBOUGHT} → "
+            + f"4) 15M > 70 → "
             + f"{self.result(c4)}\n\n"
 
             + "======================== 1 MIN + 15 MIN ===========================\n"
 
             + "5) BULLISH\n"
 
-            + f"   1M <= {RSI_1_BULLISH} → "
+            + f"   1M < 20 → "
             + f"{self.result(c5_1m)}"
 
-            + f" | 15M <= {RSI_15_BULLISH} → "
+            + f" | 15M < 25 → "
             + f"{self.result(c5_15m)}\n\n"
 
             + "6) BEARISH\n"
 
-            + f"   1M >= {RSI_1_BEARISH} → "
+            + f"   1M > 80 → "
             + f"{self.result(c6_1m)}"
 
-            + f" | 15M >= {RSI_15_BEARISH} → "
+            + f" | 15M > 75 → "
             + f"{self.result(c6_15m)}\n\n"
 
             + "========================== CURRENT VALUE ==========================\n"
 
-            + f"   1M         : "
-            + f"{rsi_1m:.2f}\n"
+            + f"   1M         : {rsi_1m:.2f}\n"
 
-            + f"   15M        : "
-            + f"{rsi_15m:.2f}\n"
+            + f"   15M        : {rsi_15m:.2f}\n"
 
-            + f"   Bank Nifty : "
-            + f"{self.last_bank_nifty:,.2f}\n"
+            + f"   Bank Nifty : {self.last_bank_nifty:,.2f}\n"
 
-            + f"   Candle     : "
-            + f"{self.last_candle_time}\n"
+            + f"   Candle     : {self.last_candle_time}\n"
 
-            + f"   Data Date  : "
-            + f"{self.data_date}\n"
+            + f"   Data Date  : {self.data_date}\n"
 
-            + f"   Current    : "
-            + f"{generated_time}\n\n"
+            + f"   Current    : {generated_time}\n\n"
 
-            + "=" * 66
+            + "=" * 90
         )
 
     # ========================================================
@@ -838,11 +664,9 @@ class ContinuousBankNiftyMonitor:
     ):
 
         if not EMAIL_ENABLED:
-
             return False
 
         if self.email is None:
-
             return False
 
         try:
@@ -854,163 +678,9 @@ class ContinuousBankNiftyMonitor:
 
             return True
 
-        except Exception as error:
-
-            print(
-                "Email error:",
-                error
-            )
+        except Exception:
 
             return False
-
-    # ========================================================
-    # NORMAL CONDITION EMAIL
-    # ========================================================
-
-    def send_condition_email(
-        self,
-        conditions
-    ):
-
-        if not EMAIL_ENABLED:
-
-            return
-
-        if not EMAIL_ON_CONDITION:
-
-            return
-
-        if not conditions:
-
-            return
-
-        if EMAIL_DUPLICATE_PROTECTION:
-
-            new_conditions = (
-                conditions
-                -
-                self.last_conditions
-            )
-
-        else:
-
-            new_conditions = conditions
-
-        if not new_conditions:
-
-            return
-
-        names = []
-
-        for condition in sorted(
-            new_conditions
-        ):
-
-            names.append(
-                self.condition_name(
-                    condition
-                )
-            )
-
-        condition_text = (
-            " + ".join(names)
-        )
-
-        market_state = (
-            self.get_market_state()
-        )
-
-        current_datetime = (
-            self.now().strftime(
-                "%Y-%m-%d %H:%M"
-            )
-        )
-
-        subject = (
-            "BANK NIFTY RSI - "
-            f"{condition_text} - "
-            f"{market_state} - "
-            f"{current_datetime}"
-        )
-
-        status = (
-            self.get_report_status(
-                conditions
-            )
-        )
-
-        body = (
-            self.build_full_report(
-                status
-            )
-        )
-
-        self.send_email(
-            subject,
-            body
-        )
-
-    # ========================================================
-    # NO CONDITION EMAIL
-    # ========================================================
-
-    def send_no_condition_email(self):
-
-        if not EMAIL_ENABLED:
-
-            return
-
-        if not EMAIL_ON_NO_CONDITION:
-
-            return
-
-        now = self.now()
-
-        if (
-            self.last_no_condition_email
-            is not None
-        ):
-
-            elapsed = (
-                now
-                -
-                self.last_no_condition_email
-            ).total_seconds()
-
-            interval = (
-                NO_CONDITION_EMAIL_INTERVAL_MINUTES
-                * 60
-            )
-
-            if elapsed < interval:
-
-                return
-
-        status = (
-            self.get_report_status(
-                set()
-            )
-        )
-
-        subject = (
-            "BANK NIFTY RSI - "
-            "NO CONDITION - "
-            f"{self.get_market_state()} - "
-            f"{now.strftime('%Y-%m-%d %H:%M')}"
-        )
-
-        body = (
-            self.build_full_report(
-                status
-            )
-        )
-
-        self.send_email(
-            subject,
-            body
-        )
-
-        self.last_no_condition_email = now
 
     # ========================================================
     # PAPER BUY EMAIL
@@ -1022,11 +692,9 @@ class ContinuousBankNiftyMonitor:
     ):
 
         if not EMAIL_ENABLED:
-
             return
 
         if not EMAIL_ON_PAPER_PURCHASE:
-
             return
 
         current_time = (
@@ -1037,8 +705,8 @@ class ContinuousBankNiftyMonitor:
 
         subject = (
             "BANK NIFTY PAPER BUY - "
-            f"{trade['strategy']} "
-            f"{trade['signal']} - "
+            f"{trade['strategy']} - "
+            f"{trade['option_type']} - "
             f"{current_time}"
         )
 
@@ -1047,49 +715,27 @@ class ContinuousBankNiftyMonitor:
             "=" * 70
             + "\n"
 
-            + "          BANK NIFTY PAPER TRADE - VIRTUAL BUY\n"
+            + "       BANK NIFTY PAPER TRADE - VIRTUAL BUY\n"
 
             + "=" * 70
             + "\n\n"
 
-            + f"Strategy       : "
-            + f"{trade['strategy']}\n"
+            + f"Strategy       : {trade['strategy']}\n"
+            + f"Signal         : {trade['signal']}\n"
+            + f"Option         : {trade['option_type']}\n"
+            + f"Strike         : {trade['strike']:.0f}\n"
+            + f"Trading Symbol : {trade['trading_symbol']}\n\n"
 
-            + f"Signal         : "
-            + f"{trade['signal']}\n"
+            + f"Entry LTP      : {trade['entry_price']:.2f}\n"
+            + f"Target         : {trade['target_price']:.2f}\n"
+            + f"Target Points  : +{trade['target_points']:.2f}\n\n"
 
-            + f"Option         : "
-            + f"{trade['option_type']}\n"
+            + f"1M RSI         : {self.last_rsi_1m:.2f}\n"
+            + f"15M RSI        : {self.last_rsi_15m:.2f}\n"
+            + f"Bank Nifty     : {self.last_bank_nifty:,.2f}\n\n"
 
-            + f"Strike         : "
-            + f"{trade['strike']:.0f}\n"
-
-            + f"Trading Symbol : "
-            + f"{trade['trading_symbol']}\n\n"
-
-            + f"Entry LTP      : "
-            + f"{trade['entry_price']:.2f}\n"
-
-            + f"Target         : "
-            + f"{trade['target_price']:.2f}\n"
-
-            + f"Target Points  : "
-            + f"+{trade['target_points']:.2f}\n\n"
-
-            + f"1M RSI         : "
-            + f"{self.last_rsi_1m:.2f}\n"
-
-            + f"15M RSI        : "
-            + f"{self.last_rsi_15m:.2f}\n"
-
-            + f"Bank Nifty     : "
-            + f"{self.last_bank_nifty:,.2f}\n\n"
-
-            + f"Quantity       : "
-            + f"{PAPER_LOTS}\n"
-
-            + f"Entry Time     : "
-            + f"{current_time}\n\n"
+            + f"Quantity       : {PAPER_LOTS}\n"
+            + f"Entry Time     : {current_time}\n\n"
 
             + "REAL ORDER     : NO\n"
             + "TRADE TYPE     : PAPER / VIRTUAL\n\n"
@@ -1112,11 +758,12 @@ class ContinuousBankNiftyMonitor:
     ):
 
         if not EMAIL_ENABLED:
-
             return
 
         if not EMAIL_ON_PAPER_SELL:
+            return
 
+        if self.paper_trader is None:
             return
 
         connection = (
@@ -1158,16 +805,13 @@ class ContinuousBankNiftyMonitor:
                 ),
             )
 
-            trade = (
-                cursor.fetchone()
-            )
+            trade = cursor.fetchone()
 
         finally:
 
             connection.close()
 
         if trade is None:
-
             return
 
         (
@@ -1193,7 +837,8 @@ class ContinuousBankNiftyMonitor:
 
         subject = (
             "BANK NIFTY PAPER SELL - "
-            f"{strategy} {signal} - "
+            f"{strategy} - "
+            f"{option_type} - "
             f"{exit_time}"
         )
 
@@ -1202,7 +847,7 @@ class ContinuousBankNiftyMonitor:
             "=" * 70
             + "\n"
 
-            + "          BANK NIFTY PAPER TRADE - VIRTUAL SELL\n"
+            + "       BANK NIFTY PAPER TRADE - VIRTUAL SELL\n"
 
             + "=" * 70
             + "\n\n"
@@ -1249,14 +894,13 @@ class ContinuousBankNiftyMonitor:
     def get_paper_signals(self):
 
         rsi_1m = self.last_rsi_1m
-
         rsi_15m = self.last_rsi_15m
 
         signals = []
 
         # ====================================================
-        # TRIGGER 1
-        # 1M <= 30 -> CE -> +15
+        # CONDITION 1
+        # 1M <= 30 -> CE +15
         # ====================================================
 
         if (
@@ -1267,8 +911,13 @@ class ContinuousBankNiftyMonitor:
 
             signals.append({
 
+                "condition_number": 1,
+
+                "condition_text":
+                    "1M <= 30",
+
                 "strategy":
-                    "1M",
+                    "1M_CE",
 
                 "signal":
                     "BULLISH",
@@ -1282,11 +931,8 @@ class ContinuousBankNiftyMonitor:
             })
 
         # ====================================================
-        # TRIGGER 2
-        # 1M >= 70 -> PE -> +15
-        #
-        # THIS IS INDEPENDENT.
-        # 15M DOES NOT MATTER.
+        # CONDITION 2
+        # 1M >= 70 -> PE +15
         # ====================================================
 
         if (
@@ -1297,8 +943,13 @@ class ContinuousBankNiftyMonitor:
 
             signals.append({
 
+                "condition_number": 2,
+
+                "condition_text":
+                    "1M >= 70",
+
                 "strategy":
-                    "1M",
+                    "1M_PE",
 
                 "signal":
                     "BEARISH",
@@ -1312,10 +963,8 @@ class ContinuousBankNiftyMonitor:
             })
 
         # ====================================================
-        # TRIGGER 3
-        # 15M < 20 -> CE -> +100
-        #
-        # 1M DOES NOT MATTER.
+        # CONDITION 3
+        # 15M < 30 -> CE +45
         # ====================================================
 
         if (
@@ -1326,8 +975,13 @@ class ContinuousBankNiftyMonitor:
 
             signals.append({
 
+                "condition_number": 3,
+
+                "condition_text":
+                    "15M < 30",
+
                 "strategy":
-                    "15M",
+                    "15M_CE",
 
                 "signal":
                     "BULLISH",
@@ -1341,10 +995,8 @@ class ContinuousBankNiftyMonitor:
             })
 
         # ====================================================
-        # TRIGGER 4
-        # 15M > 80 -> PE -> +100
-        #
-        # 1M DOES NOT MATTER.
+        # CONDITION 4
+        # 15M > 70 -> PE +45
         # ====================================================
 
         if (
@@ -1355,8 +1007,13 @@ class ContinuousBankNiftyMonitor:
 
             signals.append({
 
+                "condition_number": 4,
+
+                "condition_text":
+                    "15M > 70",
+
                 "strategy":
-                    "15M",
+                    "15M_PE",
 
                 "signal":
                     "BEARISH",
@@ -1370,27 +1027,25 @@ class ContinuousBankNiftyMonitor:
             })
 
         # ====================================================
-        # TRIGGER 5
-        # 1M <= 30 AND 15M <= 40
-        # CE -> +50
+        # CONDITION 5
+        # 1M < 20 AND 15M < 25 -> CE +75
         # ====================================================
 
         if (
-            rsi_1m
-            <=
-            RSI_1_BULLISH
-
+            rsi_1m < 20
             and
-
-            rsi_15m
-            <=
-            RSI_15_BULLISH
+            rsi_15m < 25
         ):
 
             signals.append({
 
+                "condition_number": 5,
+
+                "condition_text":
+                    "1M < 20 AND 15M < 25",
+
                 "strategy":
-                    "1M+15M",
+                    "COMBINED_CE",
 
                 "signal":
                     "BULLISH",
@@ -1404,27 +1059,25 @@ class ContinuousBankNiftyMonitor:
             })
 
         # ====================================================
-        # TRIGGER 6
-        # 1M >= 70 AND 15M >= 60
-        # PE -> +50
+        # CONDITION 6
+        # 1M > 80 AND 15M > 75 -> PE +75
         # ====================================================
 
         if (
-            rsi_1m
-            >=
-            RSI_1_BEARISH
-
+            rsi_1m > 80
             and
-
-            rsi_15m
-            >=
-            RSI_15_BEARISH
+            rsi_15m > 75
         ):
 
             signals.append({
 
+                "condition_number": 6,
+
+                "condition_text":
+                    "1M > 80 AND 15M > 75",
+
                 "strategy":
-                    "1M+15M",
+                    "COMBINED_PE",
 
                 "signal":
                     "BEARISH",
@@ -1481,16 +1134,6 @@ class ContinuousBankNiftyMonitor:
 
         if method is None:
 
-            print()
-            print(
-                "PAPER TRADE ERROR:"
-            )
-
-            print(
-                "Groww option LTP method "
-                "is not available."
-            )
-
             return None
 
         try:
@@ -1501,22 +1144,12 @@ class ContinuousBankNiftyMonitor:
             )
 
             if not result:
-
-                print(
-                    "Option LTP result is empty."
-                )
-
                 return None
 
             if not isinstance(
                 result,
                 dict
             ):
-
-                print(
-                    "Invalid option LTP response."
-                )
-
                 return None
 
             ltp = result.get(
@@ -1528,21 +1161,9 @@ class ContinuousBankNiftyMonitor:
             )
 
             if ltp is None:
-
-                print(
-                    f"Option LTP missing "
-                    f"for {option_type} {strike}"
-                )
-
                 return None
 
             if symbol is None:
-
-                print(
-                    f"Trading symbol missing "
-                    f"for {option_type} {strike}"
-                )
-
                 return None
 
             return {
@@ -1554,17 +1175,12 @@ class ContinuousBankNiftyMonitor:
                     float(ltp),
             }
 
-        except Exception as error:
-
-            print(
-                "Option LTP error:",
-                error
-            )
+        except Exception:
 
             return None
 
     # ========================================================
-    # PAPER TRADE SIGNAL DISPLAY
+    # DISPLAY PAPER SIGNAL
     # ========================================================
 
     def display_paper_signal(
@@ -1574,9 +1190,32 @@ class ContinuousBankNiftyMonitor:
         option=None
     ):
 
+        # Kept for future use.
+        # No normal RSI display.
+
+        pass
+
+    # ========================================================
+    # PRINT CONDITION MET
+    # ========================================================
+
+    def print_condition_met(
+        self,
+        signal
+    ):
+
         print()
+        print("=" * 70)
+
         print(
-            "====================== PAPER SIGNAL ======================"
+            f"CONDITION {signal['condition_number']} MET"
+        )
+
+        print("=" * 70)
+
+        print(
+            f"Condition      : "
+            f"{signal['condition_text']}"
         )
 
         print(
@@ -1592,11 +1231,6 @@ class ContinuousBankNiftyMonitor:
         print(
             f"Option         : "
             f"{signal['option_type']}"
-        )
-
-        print(
-            f"Strike         : "
-            f"{strike}"
         )
 
         print(
@@ -1619,35 +1253,12 @@ class ContinuousBankNiftyMonitor:
             f"{self.last_bank_nifty:,.2f}"
         )
 
-        if option is None:
-
-            print(
-                "Option LTP     : NOT AVAILABLE"
-            )
-
-            print(
-                "Paper BUY      : NOT CREATED"
-            )
-
-        else:
-
-            print(
-                f"Option LTP     : "
-                f"{option['ltp']:.2f}"
-            )
-
-            print(
-                f"Trading Symbol : "
-                f"{option['trading_symbol']}"
-            )
-
         print(
-            "Real Order     : NO"
+            f"Candle         : "
+            f"{self.last_candle_time}"
         )
 
-        print(
-            "==========================================================="
-        )
+        print("=" * 70)
 
     # ========================================================
     # PAPER TRADING
@@ -1656,21 +1267,19 @@ class ContinuousBankNiftyMonitor:
     def process_paper_trading(self):
 
         if not PAPER_TRADING_ENABLED:
-
             return
 
         if self.paper_trader is None:
-
-            return
-
-        if not self.is_paper_trading_session():
-
             return
 
         # ====================================================
-        # STEP 1
-        # CHECK EXISTING OPEN TRADES
+        # EXISTING OPEN TRADES
         # ====================================================
+        #
+        # Existing trades continue to be monitored.
+        # This happens even after 15:00.
+        #
+        # New BUYs are restricted separately below.
 
         open_trades = (
             self.paper_trader
@@ -1689,12 +1298,9 @@ class ContinuousBankNiftyMonitor:
 
             for trade in open_trades:
 
-                trading_symbol = (
-                    trade[5]
-                )
+                trading_symbol = trade[5]
 
                 if not trading_symbol:
-
                     continue
 
                 try:
@@ -1709,17 +1315,9 @@ class ContinuousBankNiftyMonitor:
                             trading_symbol
                         ] = float(ltp)
 
-                except Exception as error:
+                except Exception:
 
-                    print(
-                        "Option price error:",
-                        error
-                    )
-
-        # ====================================================
-        # STEP 2
-        # CHECK TARGETS
-        # ====================================================
+                    continue
 
         closed_trade_ids = []
 
@@ -1733,27 +1331,67 @@ class ContinuousBankNiftyMonitor:
             )
 
         # ====================================================
-        # STEP 3
-        # SELL EMAIL
+        # PAPER SELL
         # ====================================================
 
-        for trade_id in (
-            closed_trade_ids
-        ):
+        for trade_id in closed_trade_ids:
 
             print()
+            print("=" * 70)
+
             print(
-                f"PAPER SELL COMPLETED "
-                f"Trade ID: {trade_id}"
+                "PAPER SELL COMPLETED"
             )
+
+            print(
+                f"Trade ID      : {trade_id}"
+            )
+
+            print(
+                f"1M RSI        : "
+                f"{self.last_rsi_1m:.2f}"
+            )
+
+            print(
+                f"15M RSI       : "
+                f"{self.last_rsi_15m:.2f}"
+            )
+
+            print(
+                f"Bank Nifty    : "
+                f"{self.last_bank_nifty:,.2f}"
+            )
+
+            print(
+                f"Candle        : "
+                f"{self.last_candle_time}"
+            )
+
+            print(
+                "REAL ORDER    : NO"
+            )
+
+            print("=" * 70)
 
             self.send_paper_sell_email(
                 trade_id
             )
 
         # ====================================================
-        # STEP 4
-        # GET ALL ACTIVE SIGNALS
+        # NEW PAPER BUY SESSION
+        # ====================================================
+        #
+        # NO NEW BUY before 10:00
+        # NO NEW BUY at/after 15:00
+        #
+        # Existing trades above are still monitored.
+
+        if not self.is_paper_trading_session():
+
+            return
+
+        # ====================================================
+        # CURRENT SIX CONDITIONS
         # ====================================================
 
         signals = (
@@ -1765,31 +1403,36 @@ class ContinuousBankNiftyMonitor:
             return
 
         # ====================================================
-        # STEP 5
-        # PROCESS EACH SIGNAL INDEPENDENTLY
+        # PROCESS SIGNALS
         # ====================================================
 
         for signal in signals:
 
-            strategy = (
-                signal["strategy"]
-            )
+            strategy = signal[
+                "strategy"
+            ]
 
-            signal_name = (
-                signal["signal"]
-            )
+            signal_name = signal[
+                "signal"
+            ]
 
-            option_type = (
-                signal["option_type"]
-            )
+            option_type = signal[
+                "option_type"
+            ]
 
-            target_points = (
-                signal["target_points"]
-            )
+            target_points = signal[
+                "target_points"
+            ]
 
             # ------------------------------------------------
-            # ONE OPEN TRADE PER STRATEGY + DIRECTION
+            # STRATEGY LOCK
             # ------------------------------------------------
+            #
+            # If this strategy already has an OPEN trade,
+            # do not BUY again.
+            #
+            # Once the trade is SOLD, this check becomes
+            # available again automatically.
 
             existing_trade = (
                 self.paper_trader
@@ -1803,6 +1446,14 @@ class ContinuousBankNiftyMonitor:
                 continue
 
             # ------------------------------------------------
+            # CONDITION MET
+            # ------------------------------------------------
+
+            self.print_condition_met(
+                signal
+            )
+
+            # ------------------------------------------------
             # STRIKE
             # ------------------------------------------------
 
@@ -1813,7 +1464,7 @@ class ContinuousBankNiftyMonitor:
             )
 
             # ------------------------------------------------
-            # GET LIVE OPTION LTP
+            # OPTION LTP
             # ------------------------------------------------
 
             option = (
@@ -1823,29 +1474,13 @@ class ContinuousBankNiftyMonitor:
                 )
             )
 
-            # ------------------------------------------------
-            # SHOW SIGNAL EVEN IF LTP FAILS
-            # ------------------------------------------------
-
-            self.display_paper_signal(
-                signal,
-                strike,
-                option
-            )
-
             if option is None:
 
                 continue
 
-            # ------------------------------------------------
-            # ENTRY
-            # ------------------------------------------------
-
-            trading_symbol = (
-                option[
-                    "trading_symbol"
-                ]
-            )
+            trading_symbol = option[
+                "trading_symbol"
+            ]
 
             entry_price = float(
                 option["ltp"]
@@ -1858,7 +1493,7 @@ class ContinuousBankNiftyMonitor:
             )
 
             # ------------------------------------------------
-            # VIRTUAL BUY
+            # PAPER BUY
             # ------------------------------------------------
 
             opened = (
@@ -1866,40 +1501,35 @@ class ContinuousBankNiftyMonitor:
                 .open_trade(
 
                     strategy=strategy,
-
                     signal=signal_name,
-
                     option_type=option_type,
-
                     strike=strike,
-
                     trading_symbol=trading_symbol,
-
                     entry_price=entry_price,
-
                     target_points=target_points,
-
                     rsi_1m=self.last_rsi_1m,
-
                     rsi_15m=self.last_rsi_15m,
-
                     bank_nifty=self.last_bank_nifty,
                 )
             )
 
             # ------------------------------------------------
-            # BUY SUCCESS
+            # CONFIRMED PAPER BUY
             # ------------------------------------------------
 
             if opened:
 
                 print()
-                print(
-                    "==========================================================="
-                )
+                print("=" * 70)
 
                 print(
                     "PAPER BUY CREATED"
+                )
+
+                print(
+                    f"Condition      : "
+                    f"{signal['condition_number']} - "
+                    f"{signal['condition_text']}"
                 )
 
                 print(
@@ -1943,18 +1573,42 @@ class ContinuousBankNiftyMonitor:
                 )
 
                 print(
-                    f"Real Order     : NO"
+                    f"1M RSI         : "
+                    f"{self.last_rsi_1m:.2f}"
                 )
 
                 print(
-                    "==========================================================="
+                    f"15M RSI        : "
+                    f"{self.last_rsi_15m:.2f}"
                 )
 
-                # --------------------------------------------
-                # BUY EMAIL
-                # --------------------------------------------
+                print(
+                    f"Bank Nifty     : "
+                    f"{self.last_bank_nifty:,.2f}"
+                )
+
+                print(
+                    f"Candle         : "
+                    f"{self.last_candle_time}"
+                )
+
+                print(
+                    "REAL ORDER     : NO"
+                )
+
+                print("=" * 70)
 
                 trade = {
+
+                    "condition_number":
+                        signal[
+                            "condition_number"
+                        ],
+
+                    "condition_text":
+                        signal[
+                            "condition_text"
+                        ],
 
                     "strategy":
                         strategy,
@@ -1986,54 +1640,16 @@ class ContinuousBankNiftyMonitor:
                 )
 
     # ========================================================
-    # DISPLAY
+    # NORMAL DISPLAY
     # ========================================================
 
     def display(self):
 
-        try:
+        # Normal RSI display remains disabled.
+        #
+        # Only PAPER BUY / PAPER SELL events are printed.
 
-            from monitor.display import (
-                show
-            )
-
-            show(
-
-                rsi_1m=self.last_rsi_1m,
-
-                rsi_15m=self.last_rsi_15m,
-
-                bank_nifty=self.last_bank_nifty,
-
-                candle_time=self.last_candle_time,
-
-                market_status=(
-                    self.get_market_state()
-                ),
-            )
-
-        except Exception as error:
-
-            print(
-                f"Display error: {error}"
-            )
-
-    # ========================================================
-    # NEWS STATUS
-    # ========================================================
-
-    def get_news_status(self):
-
-        try:
-
-            return self.news.status()
-
-        except Exception as exc:
-
-            return {
-                "status": "error",
-                "error": str(exc),
-            }
+        pass
 
     # ========================================================
     # PROCESS
@@ -2043,28 +1659,6 @@ class ContinuousBankNiftyMonitor:
 
         self.read_data()
 
-        conditions = (
-            self.get_conditions()
-        )
-
-        # ----------------------------------------------------
-        # RSI EMAIL
-        # ----------------------------------------------------
-
-        if conditions:
-
-            self.send_condition_email(
-                conditions
-            )
-
-            self.last_no_condition_email = (
-                None
-            )
-
-        else:
-
-            self.send_no_condition_email()
-
         # ----------------------------------------------------
         # PAPER TRADING
         # ----------------------------------------------------
@@ -2072,18 +1666,10 @@ class ContinuousBankNiftyMonitor:
         self.process_paper_trading()
 
         # ----------------------------------------------------
-        # CONDITION MEMORY
+        # NORMAL RSI DISPLAY DISABLED
         # ----------------------------------------------------
 
-        self.last_conditions = (
-            conditions
-        )
-
-        # ----------------------------------------------------
-        # DISPLAY
-        # ----------------------------------------------------
-
-        self.display()
+        # self.display()
 
     # ========================================================
     # RUN
@@ -2091,103 +1677,28 @@ class ContinuousBankNiftyMonitor:
 
     def run(self):
 
-        print()
-        print(
-            "==========================================================="
-        )
-
-        print(
-            "BANK NIFTY RSI MONITOR STARTED"
-        )
-
-        print(
-            "PAPER TRADING :",
-            PAPER_TRADING_ENABLED
-        )
-
-        print(
-            "REAL ORDERS   :",
-            REAL_ORDERS_ENABLED
-        )
-
-        print(
-            "CHECK INTERVAL:",
-            CHECK_INTERVAL_SECONDS,
-            "seconds"
-        )
-
-        print(
-            "==========================================================="
-        )
-
         try:
 
             while True:
 
                 try:
 
-                    current_time = (
-                        self.now().time()
-                    )
-
-                    monitor_start = (
-                        self.parse_time(
-                            PRE_MARKET_TIME
-                        )
-                    )
-
-                    monitor_end = (
-                        self.parse_time(
-                            MONITOR_CLOSE_TIME
-                        )
-                    )
-
-                    if (
-                        monitor_start
-                        <= current_time
-                        <= monitor_end
-                    ):
-
-                        self.process()
-
-                    else:
-
-                        self.process()
+                    self.process()
 
                     time.sleep(
                         CHECK_INTERVAL_SECONDS
                     )
 
-                except Exception as error:
+                except Exception:
 
-                    print(
-                        "Data error:",
-                        error
-                    )
-
+                    # All routine monitor errors are silent.
                     time.sleep(
                         CHECK_INTERVAL_SECONDS
                     )
 
         except KeyboardInterrupt:
 
-            print()
-
-            print(
-                "Bank Nifty RSI monitor stopped."
-            )
-
-            # ------------------------------------------------
-            # STOP NEWS BACKGROUND SERVICE
-            # ------------------------------------------------
-
-            try:
-
-                self.news.stop()
-
-            except Exception:
-
-                pass
+            pass
 
 
 # ============================================================

@@ -1,0 +1,4578 @@
+import subprocess
+import sys
+from pathlib import Path
+
+from monitor.continuous_monitor import (
+    ContinuousBankNiftyMonitor
+)
+
+
+# ============================================================
+# START DASHBOARD
+# cd D:\Nif\Bankifty    python -m uvicorn api.app:app --host 0.0.0.0 --port 8000
+# ============================================================
+
+def start_dashboard():
+
+    dashboard_file = (
+        Path(__file__).resolve()
+        .parent
+        / "dashboard"
+        / "app.py"
+    )
+
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "streamlit",
+            "run",
+            str(dashboard_file),
+            "--server.headless",
+            "true",
+            "--server.port",
+            "8501",
+        ]
+    )
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    # --------------------------------------------------------
+    # Start Streamlit dashboard automatically
+    # --------------------------------------------------------
+
+    dashboard_process = (
+        start_dashboard()
+    )
+
+    # --------------------------------------------------------
+    # Start Bank Nifty monitor
+    # --------------------------------------------------------
+
+    monitor = (
+        ContinuousBankNiftyMonitor()
+    )
+
+    try:
+
+        monitor.run()
+
+    finally:
+
+        # ----------------------------------------------------
+        # Stop dashboard when main.py is stopped
+        # ----------------------------------------------------
+
+        if (
+            dashboard_process
+            and
+            dashboard_process.poll()
+            is None
+        ):
+
+            dashboard_process.terminate()
+
+
+# ============================================================
+# ENTRY POINT
+# ============================================================
+
+if __name__ == "__main__":
+
+    main()
+"""
+Bank Nifty Live Index Monitor
+Groww API 1.5.0
+
+ALERT ONLY
+NO ORDER PLACEMENT
+"""
+
+import time
+from datetime import datetime
+
+from growwapi import GrowwAPI, GrowwFeed
+
+from config.settings import (
+    GROWW_API_KEY,
+    GROWW_API_SECRET,
+)
+
+
+class GrowwMarketData:
+
+    def __init__(self):
+        self.groww = None
+        self.feed = None
+
+    # ========================================================
+    # AUTHENTICATION
+    # ========================================================
+
+    def connect(self):
+
+        if not GROWW_API_KEY:
+            raise ValueError(
+                "GROWW_API_KEY is missing."
+            )
+
+        if not GROWW_API_SECRET:
+            raise ValueError(
+                "GROWW_API_SECRET is missing."
+            )
+
+        print("Authenticating with Groww...")
+
+        access_token = GrowwAPI.get_access_token(
+            api_key=GROWW_API_KEY,
+            secret=GROWW_API_SECRET,
+        )
+
+        self.groww = GrowwAPI(access_token)
+
+        print("Groww authentication successful.")
+
+    # ========================================================
+    # CREATE FEED
+    # ========================================================
+
+    def create_feed(self):
+
+        if self.groww is None:
+            self.connect()
+
+        self.feed = GrowwFeed(self.groww)
+
+        print("Groww live feed created.")
+
+    # ========================================================
+    # SUBSCRIBE BANK NIFTY INDEX
+    # ========================================================
+
+    def subscribe_bank_nifty(self):
+
+        if self.feed is None:
+            self.create_feed()
+
+        instruments = [
+            {
+                "exchange": "NSE",
+                "segment": "CASH",
+                "exchange_token": "BANKNIFTY",
+            }
+        ]
+
+        print()
+        print("Subscribing to Bank Nifty index...")
+
+        self.feed.subscribe_index_value(
+            instruments
+        )
+
+        print("Bank Nifty subscription successful.")
+
+    # ========================================================
+    # GET INDEX DATA
+    # ========================================================
+
+    def get_bank_nifty_data(self):
+
+        if self.feed is None:
+            self.subscribe_bank_nifty()
+
+        return self.feed.get_index_value()
+
+    # ========================================================
+    # EXTRACT BANK NIFTY VALUE
+    # ========================================================
+
+    @staticmethod
+    def extract_bank_nifty_value(data):
+
+        try:
+
+            value = (
+                data
+                ["NSE"]
+                ["CASH"]
+                ["BANKNIFTY"]
+                ["value"]
+            )
+
+            if value is None:
+                return None
+
+            return float(value)
+
+        except (KeyError, TypeError):
+
+            return None
+
+    # ========================================================
+    # TEST
+    # ========================================================
+
+    def test_live_data(self):
+
+        self.subscribe_bank_nifty()
+
+        print()
+        print("=" * 70)
+        print("BANK NIFTY LIVE INDEX DATA")
+        print("=" * 70)
+
+        for _ in range(10):
+
+            time.sleep(2)
+
+            data = self.get_bank_nifty_data()
+
+            bank_nifty = self.extract_bank_nifty_value(
+                data
+            )
+
+            timestamp = datetime.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+
+            print()
+            print("Time       :", timestamp)
+            print("Raw Data   :", data)
+            print(
+                "Bank Nifty :",
+                bank_nifty
+            )
+
+        print()
+        print("=" * 70)
+        print("TEST FINISHED")
+        print("=" * 70)
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+def main():
+
+    print()
+    print("=" * 70)
+    print("BANK NIFTY LIVE DATA TEST")
+    print("=" * 70)
+
+    try:
+
+        market_data = GrowwMarketData()
+
+        market_data.test_live_data()
+
+    except Exception as error:
+
+        print()
+        print("=" * 70)
+        print("LIVE DATA TEST FAILED")
+        print("=" * 70)
+
+        print(
+            "Error type :",
+            type(error).__name__
+        )
+
+        print(
+            "Error      :",
+            error
+        )
+
+        print("=" * 70)
+
+
+if __name__ == "__main__":
+    main()
+"""
+Bank Nifty RSI Monitor
+Application Settings
+"""
+
+from pathlib import Path
+import os
+
+from dotenv import load_dotenv
+
+
+# ============================================================
+# PROJECT
+# ============================================================
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+ENV_FILE = PROJECT_ROOT / ".env"
+
+load_dotenv(ENV_FILE)
+
+
+# ============================================================
+# GROWW API
+# ============================================================
+
+GROWW_API_KEY = os.getenv(
+    "GROWW_API_KEY",
+    ""
+)
+
+GROWW_API_SECRET = os.getenv(
+    "GROWW_API_SECRET",
+    ""
+)
+
+
+# ============================================================
+# MARKET
+# ============================================================
+
+INDEX_NAME = "BANKNIFTY"
+
+TIME_ZONE = "Asia/Kolkata"
+
+PRE_MARKET_TIME = "09:00"
+
+MARKET_OPEN_TIME = "09:15"
+
+MARKET_CLOSE_TIME = "15:30"
+
+MONITOR_CLOSE_TIME = "16:30"
+
+
+# ============================================================
+# HISTORICAL DATA DATE SETTINGS
+# ============================================================
+
+DATA_SELECTION_TIME = "09:00"
+
+HISTORICAL_START_TIME = "09:15"
+
+HISTORICAL_END_TIME = "16:30"
+
+HISTORICAL_LOOKBACK_DAYS = 10
+
+
+# ============================================================
+# RSI SETTINGS
+# ============================================================
+
+RSI_PERIOD = 14
+
+
+# ============================================================
+# 15-MINUTE RSI CONDITIONS
+# ============================================================
+
+# Individual 15M conditions
+#
+# 15M < 30  -> CE
+# 15M > 70  -> PE
+
+RSI_15_EXTREME_OVERSOLD = 30
+
+RSI_15_EXTREME_OVERBOUGHT = 70
+
+
+# Combined conditions
+#
+# 1M < 20 AND 15M < 25 -> CE
+#
+# 1M > 80 AND 15M > 75 -> PE
+
+RSI_15_BULLISH = 25
+
+RSI_15_BEARISH = 75
+
+
+# ============================================================
+# 1-MINUTE RSI CONDITIONS
+# ============================================================
+
+# Individual conditions
+#
+# 1M <= 30 -> CE
+# 1M >= 70 -> PE
+
+RSI_1_BULLISH = 30
+
+RSI_1_BEARISH = 70
+
+
+# ============================================================
+# COMBINED 1-MINUTE RSI CONDITIONS
+# ============================================================
+
+# IMPORTANT:
+#
+# These are intentionally different from the individual
+# 1-minute conditions.
+#
+# Condition 5:
+#
+# 1M < 20 AND 15M < 25 -> CE
+#
+# Condition 6:
+#
+# 1M > 80 AND 15M > 75 -> PE
+
+RSI_1_COMBINED_BULLISH = 20
+
+RSI_1_COMBINED_BEARISH = 80
+
+
+# ============================================================
+# PAPER TRADING TIME WINDOW
+# ============================================================
+
+# NEW PAPER BUYs are allowed only between:
+#
+# 10:00 AM and 3:00 PM IST.
+#
+# Existing OPEN paper trades are not affected by this
+# entry window. Their normal SELL/target monitoring can
+# continue.
+
+PAPER_TRADING_START_TIME = "10:00"
+
+PAPER_TRADING_END_TIME = "15:00"
+
+
+# ============================================================
+# MONITORING
+# ============================================================
+
+CHECK_INTERVAL_SECONDS = 3
+
+
+# ============================================================
+# EMAIL SETTINGS
+# ============================================================
+
+# Master email switch.
+#
+# True  = emails enabled
+# False = no emails
+
+EMAIL_ENABLED = True
+
+
+EMAIL_SMTP_SERVER = os.getenv(
+    "EMAIL_SMTP_SERVER",
+    "smtp.gmail.com"
+)
+
+EMAIL_SMTP_PORT = int(
+    os.getenv(
+        "EMAIL_SMTP_PORT",
+        "587"
+    )
+)
+
+EMAIL_SENDER = os.getenv(
+    "EMAIL_SENDER",
+    ""
+)
+
+EMAIL_PASSWORD = os.getenv(
+    "EMAIL_PASSWORD",
+    ""
+)
+
+EMAIL_RECIPIENT_1 = os.getenv(
+    "EMAIL_RECIPIENT_1",
+    ""
+)
+
+EMAIL_RECIPIENT_2 = os.getenv(
+    "EMAIL_RECIPIENT_2",
+    ""
+)
+
+
+# ============================================================
+# EMAIL NOTIFICATION CONTROL
+# ============================================================
+
+# IMPORTANT:
+#
+# Normal RSI condition emails are DISABLED.
+#
+# Example:
+#
+# BULLISH
+# BEARISH
+# PARTIAL BULLISH
+# PARTIAL BEARISH
+#
+# will NOT generate an email.
+
+EMAIL_ON_CONDITION = False
+
+
+# No-condition emails are also disabled.
+
+EMAIL_ON_NO_CONDITION = False
+
+
+# Kept for compatibility with existing monitor code.
+
+NO_CONDITION_EMAIL_INTERVAL_MINUTES = 5
+
+
+# No outside-market emails.
+
+EMAIL_OUTSIDE_MARKET = False
+
+
+# No market-close emails.
+
+EMAIL_ON_MARKET_CLOSE = False
+
+
+# Protect against duplicate paper-trade emails.
+
+EMAIL_DUPLICATE_PROTECTION = True
+
+
+# Send to all configured recipients.
+
+EMAIL_TO_ALL_RECIPIENTS = True
+
+
+# ============================================================
+# PAPER TRADE EMAIL
+# ============================================================
+
+# ONLY send an email after a virtual BUY
+# has actually been created successfully.
+
+EMAIL_ON_PAPER_PURCHASE = True
+
+
+# ONLY send an email after a virtual SELL
+# has actually been completed successfully.
+
+EMAIL_ON_PAPER_SELL = True
+
+
+# ============================================================
+# PAPER TRADING
+# ============================================================
+
+# Real market data + virtual trading.
+
+PAPER_TRADING_ENABLED = True
+
+
+# ============================================================
+# REAL ORDER SAFETY
+# ============================================================
+
+# MUST remain False.
+#
+# No real order will ever be sent.
+
+REAL_ORDERS_ENABLED = False
+
+
+# ============================================================
+# PAPER TRADING TARGETS
+# ============================================================
+
+# ------------------------------------------------------------
+# 1-MINUTE
+# ------------------------------------------------------------
+#
+# 1M <= 30
+#     CE
+#     Entry + 15
+#
+# 1M >= 70
+#     PE
+#     Entry + 15
+
+PAPER_1M_TARGET_POINTS = 15
+
+
+# ------------------------------------------------------------
+# 15-MINUTE
+# ------------------------------------------------------------
+#
+# 15M < 30
+#     CE
+#     Entry + 45
+#
+# 15M > 70
+#     PE
+#     Entry + 45
+
+PAPER_15M_TARGET_POINTS = 45
+
+
+# ------------------------------------------------------------
+# 1M + 15M
+# ------------------------------------------------------------
+#
+# 1M < 20 AND 15M < 25
+#     CE
+#     Entry + 75
+#
+# 1M > 80 AND 15M > 75
+#     PE
+#     Entry + 75
+
+PAPER_COMBINED_TARGET_POINTS = 75
+
+
+# ============================================================
+# PAPER OPTION SETTINGS
+# ============================================================
+
+# Bank Nifty strike interval.
+
+PAPER_STRIKE_STEP = 100
+
+
+# Number of virtual lots.
+
+PAPER_LOTS = 1
+
+
+# ============================================================
+# PAPER DATABASE
+# ============================================================
+
+PAPER_DATABASE_FILE = (
+    PROJECT_ROOT
+    / "data"
+    / "paper_trading.db"
+)
+
+
+# ============================================================
+# TRADING SAFETY
+# ============================================================
+
+# Monitor remains alert-only.
+
+ALERT_ONLY = True
+
+
+# Real orders remain disabled.
+
+ORDERS_ENABLED = False
+
+
+# ============================================================
+# VALIDATE SETTINGS
+# ============================================================
+
+def validate_settings():
+
+    # --------------------------------------------------------
+    # GROWW API
+    # --------------------------------------------------------
+
+    if not GROWW_API_KEY:
+
+        raise ValueError(
+            "GROWW_API_KEY is missing in .env"
+        )
+
+    if not GROWW_API_SECRET:
+
+        raise ValueError(
+            "GROWW_API_SECRET is missing in .env"
+        )
+
+    # --------------------------------------------------------
+    # SAFETY
+    # --------------------------------------------------------
+
+    if not ALERT_ONLY:
+
+        raise ValueError(
+            "ALERT_ONLY must remain True."
+        )
+
+    if ORDERS_ENABLED:
+
+        raise ValueError(
+            "ORDERS_ENABLED must remain False."
+        )
+
+    if (
+        PAPER_TRADING_ENABLED
+        and
+        REAL_ORDERS_ENABLED
+    ):
+
+        raise ValueError(
+            "REAL_ORDERS_ENABLED must remain False "
+            "while PAPER_TRADING_ENABLED is True."
+        )
+
+    # --------------------------------------------------------
+    # MONITORING
+    # --------------------------------------------------------
+
+    if CHECK_INTERVAL_SECONDS <= 0:
+
+        raise ValueError(
+            "CHECK_INTERVAL_SECONDS must be "
+            "greater than 0."
+        )
+
+    # --------------------------------------------------------
+    # EMAIL INTERVAL
+    # --------------------------------------------------------
+
+    if NO_CONDITION_EMAIL_INTERVAL_MINUTES <= 0:
+
+        raise ValueError(
+            "NO_CONDITION_EMAIL_INTERVAL_MINUTES "
+            "must be greater than 0."
+        )
+
+    # --------------------------------------------------------
+    # HISTORICAL DATA
+    # --------------------------------------------------------
+
+    if HISTORICAL_LOOKBACK_DAYS <= 0:
+
+        raise ValueError(
+            "HISTORICAL_LOOKBACK_DAYS "
+            "must be greater than 0."
+        )
+
+    # --------------------------------------------------------
+    # PAPER TARGETS
+    # --------------------------------------------------------
+
+    if PAPER_1M_TARGET_POINTS <= 0:
+
+        raise ValueError(
+            "PAPER_1M_TARGET_POINTS "
+            "must be greater than 0."
+        )
+
+    if PAPER_15M_TARGET_POINTS <= 0:
+
+        raise ValueError(
+            "PAPER_15M_TARGET_POINTS "
+            "must be greater than 0."
+        )
+
+    if PAPER_COMBINED_TARGET_POINTS <= 0:
+
+        raise ValueError(
+            "PAPER_COMBINED_TARGET_POINTS "
+            "must be greater than 0."
+        )
+
+    # --------------------------------------------------------
+    # OPTION SETTINGS
+    # --------------------------------------------------------
+
+    if PAPER_STRIKE_STEP <= 0:
+
+        raise ValueError(
+            "PAPER_STRIKE_STEP "
+            "must be greater than 0."
+        )
+
+    if PAPER_LOTS <= 0:
+
+        raise ValueError(
+            "PAPER_LOTS must be greater than 0."
+        )
+
+    # --------------------------------------------------------
+    # EMAIL
+    # --------------------------------------------------------
+
+    if EMAIL_ENABLED:
+
+        if not EMAIL_SENDER:
+
+            raise ValueError(
+                "EMAIL_SENDER is missing in .env"
+            )
+
+        if not EMAIL_PASSWORD:
+
+            raise ValueError(
+                "EMAIL_PASSWORD is missing in .env"
+            )
+
+        if (
+            not EMAIL_RECIPIENT_1
+            and
+            not EMAIL_RECIPIENT_2
+        ):
+
+            raise ValueError(
+                "At least one email recipient "
+                "is required."
+            )
+
+    return True
+
+
+# ============================================================
+# TEST
+# ============================================================
+
+if __name__ == "__main__":
+
+    print()
+    print("=" * 65)
+
+    print(
+        "BANK NIFTY RSI MONITOR - SETTINGS"
+    )
+
+    print("=" * 65)
+
+    try:
+
+        validate_settings()
+
+        print(
+            "Groww API Key    : Loaded"
+        )
+
+        print(
+            "Groww API Secret : Loaded"
+        )
+
+        print()
+        print("Market:")
+
+        print(
+            "  Index             :",
+            INDEX_NAME
+        )
+
+        print(
+            "  Time Zone         :",
+            TIME_ZONE
+        )
+
+        print(
+            "  Monitor Start     :",
+            PRE_MARKET_TIME
+        )
+
+        print(
+            "  Market Open       :",
+            MARKET_OPEN_TIME
+        )
+
+        print(
+            "  Market Close      :",
+            MARKET_CLOSE_TIME
+        )
+
+        print(
+            "  Monitor Close     :",
+            MONITOR_CLOSE_TIME
+        )
+
+        print()
+        print("Historical Data:")
+
+        print(
+            "  Date Selection    :",
+            DATA_SELECTION_TIME
+        )
+
+        print(
+            "  Start Time        :",
+            HISTORICAL_START_TIME
+        )
+
+        print(
+            "  End Time          :",
+            HISTORICAL_END_TIME
+        )
+
+        print(
+            "  Lookback Days     :",
+            HISTORICAL_LOOKBACK_DAYS
+        )
+
+        print()
+        print("RSI:")
+
+        print(
+            "  Period            :",
+            RSI_PERIOD
+        )
+
+        print()
+        print("15-Minute:")
+
+        print(
+            "  Oversold          :",
+            f"< {RSI_15_EXTREME_OVERSOLD}"
+        )
+
+        print(
+            "  Overbought        :",
+            f"> {RSI_15_EXTREME_OVERBOUGHT}"
+        )
+
+        print(
+            "  Combined Bullish  :",
+            f"< {RSI_15_BULLISH}"
+        )
+
+        print(
+            "  Combined Bearish  :",
+            f"> {RSI_15_BEARISH}"
+        )
+
+        print()
+        print("1-Minute:")
+
+        print(
+            "  Bullish           :",
+            f"<= {RSI_1_BULLISH}"
+        )
+
+        print(
+            "  Bearish           :",
+            f">= {RSI_1_BEARISH}"
+        )
+
+        print()
+        print("Combined 1-Minute:")
+
+        print(
+            "  Bullish           :",
+            f"< {RSI_1_COMBINED_BULLISH}"
+        )
+
+        print(
+            "  Bearish           :",
+            f"> {RSI_1_COMBINED_BEARISH}"
+        )
+
+        print()
+        print("Paper Trading Window:")
+
+        print(
+            "  Start             :",
+            PAPER_TRADING_START_TIME
+        )
+
+        print(
+            "  End               :",
+            PAPER_TRADING_END_TIME
+        )
+
+        print()
+        print("Monitoring:")
+
+        print(
+            "  Check interval    :",
+            f"{CHECK_INTERVAL_SECONDS} seconds"
+        )
+
+        print()
+        print("Email:")
+
+        print(
+            "  Email Enabled     :",
+            EMAIL_ENABLED
+        )
+
+        print(
+            "  RSI Condition     :",
+            EMAIL_ON_CONDITION
+        )
+
+        print(
+            "  No Condition      :",
+            EMAIL_ON_NO_CONDITION
+        )
+
+        print(
+            "  Outside Market    :",
+            EMAIL_OUTSIDE_MARKET
+        )
+
+        print(
+            "  Market Close      :",
+            EMAIL_ON_MARKET_CLOSE
+        )
+
+        print(
+            "  Duplicate Protect :",
+            EMAIL_DUPLICATE_PROTECTION
+        )
+
+        print(
+            "  All Recipients    :",
+            EMAIL_TO_ALL_RECIPIENTS
+        )
+
+        print()
+        print("Paper Trade Email:")
+
+        print(
+            "  Purchase Email    :",
+            EMAIL_ON_PAPER_PURCHASE
+        )
+
+        print(
+            "  Sell Email        :",
+            EMAIL_ON_PAPER_SELL
+        )
+
+        print()
+        print("Paper Trading:")
+
+        print(
+            "  Paper Trading     :",
+            PAPER_TRADING_ENABLED
+        )
+
+        print(
+            "  Real Orders       :",
+            REAL_ORDERS_ENABLED
+        )
+
+        print(
+            "  1M Target         :",
+            f"+{PAPER_1M_TARGET_POINTS}"
+        )
+
+        print(
+            "  15M Target        :",
+            f"+{PAPER_15M_TARGET_POINTS}"
+        )
+
+        print(
+            "  Combined Target   :",
+            f"+{PAPER_COMBINED_TARGET_POINTS}"
+        )
+
+        print(
+            "  Strike Step       :",
+            PAPER_STRIKE_STEP
+        )
+
+        print(
+            "  Paper Lots        :",
+            PAPER_LOTS
+        )
+
+        print(
+            "  Database          :",
+            PAPER_DATABASE_FILE
+        )
+
+        print()
+        print("Safety:")
+
+        print(
+            "  Alert Only        :",
+            ALERT_ONLY
+        )
+
+        print(
+            "  Orders Enabled    :",
+            ORDERS_ENABLED
+        )
+
+        print()
+        print("=" * 65)
+
+        print(
+            "SETTINGS OK"
+        )
+
+        print("=" * 65)
+
+    except ValueError as error:
+
+        print()
+        print("=" * 65)
+
+        print(
+            "SETTINGS ERROR"
+        )
+
+        print("=" * 65)
+
+        print(error)
+
+        print("=" * 65)
+"""
+Bank Nifty RSI Indicator
+RSI(14) using Wilder's smoothing method.
+"""
+
+import pandas as pd
+
+
+def calculate_rsi(
+    prices: pd.Series,
+    period: int = 14,
+) -> pd.Series:
+
+    if not isinstance(prices, pd.Series):
+        prices = pd.Series(
+            prices,
+            dtype="float64",
+        )
+
+    prices = prices.astype("float64")
+
+    if len(prices) < period + 1:
+        raise ValueError(
+            f"Not enough price data for RSI({period}). "
+            f"Need at least {period + 1} prices."
+        )
+
+    delta = prices.diff()
+
+    gain = delta.clip(
+        lower=0
+    )
+
+    loss = -delta.clip(
+        upper=0
+    )
+
+    average_gain = gain.ewm(
+        alpha=1 / period,
+        min_periods=period,
+        adjust=False,
+    ).mean()
+
+    average_loss = loss.ewm(
+        alpha=1 / period,
+        min_periods=period,
+        adjust=False,
+    ).mean()
+
+    rs = (
+        average_gain
+        / average_loss
+    )
+
+    rsi = 100 - (
+        100 / (1 + rs)
+    )
+
+    rsi = rsi.mask(
+        average_loss == 0,
+        100.0,
+    )
+
+    rsi = rsi.mask(
+        (average_gain == 0)
+        &
+        (average_loss == 0),
+        50.0,
+    )
+
+    return rsi
+
+
+def calculate_latest_rsi(
+    prices: pd.Series,
+    period: int = 14,
+) -> float:
+
+    rsi = calculate_rsi(
+        prices=prices,
+        period=period,
+    )
+
+    valid_rsi = rsi.dropna()
+
+    if valid_rsi.empty:
+        raise ValueError(
+            "Unable to calculate RSI."
+        )
+
+    return float(
+        valid_rsi.iloc[-1]
+    )
+
+
+def candle_closes_to_series(
+    candles: list,
+) -> pd.Series:
+
+    if not candles:
+        raise ValueError(
+            "No candles received."
+        )
+
+    closes = []
+
+    for candle in candles:
+
+        if len(candle) < 5:
+            raise ValueError(
+                f"Invalid candle format: {candle}"
+            )
+
+        close_price = candle[4]
+
+        if close_price is None:
+            continue
+
+        closes.append(
+            float(close_price)
+        )
+
+    if not closes:
+        raise ValueError(
+            "No valid closing prices found."
+        )
+
+    return pd.Series(
+        closes,
+        dtype="float64",
+    )
+
+
+if __name__ == "__main__":
+
+    print("=" * 60)
+    print("RSI MODULE TEST")
+    print("=" * 60)
+
+    test_prices = pd.Series([
+        100,
+        101,
+        102,
+        101,
+        103,
+        104,
+        105,
+        103,
+        106,
+        107,
+        108,
+        107,
+        109,
+        110,
+        111,
+        112,
+        113,
+        114,
+        115,
+        116,
+    ])
+
+    rsi_series = calculate_rsi(
+        test_prices,
+        period=14,
+    )
+
+    latest_rsi = calculate_latest_rsi(
+        test_prices,
+        period=14,
+    )
+
+    print()
+    print("RSI Series:")
+    print(rsi_series)
+
+    print()
+    print(
+        f"Latest RSI(14): {latest_rsi:.2f}"
+    )
+
+    print()
+    print("RSI MODULE TEST : SUCCESS")
+    print("=" * 60)
+"""
+Bank Nifty RSI Alert Rules
+
+ALERT ONLY.
+No orders.
+"""
+
+
+# ============================================================
+# CHECK RSI CONDITIONS
+# ============================================================
+
+def check_signals(
+    rsi_1m: float,
+    rsi_15m: float,
+):
+    """
+    Check all Bank Nifty RSI alert conditions.
+
+    Rules:
+
+    1. 15M RSI < 20
+       Extreme Oversold
+
+    2. 15M RSI > 80
+       Extreme Overbought
+
+    3. 15M RSI <= 40 AND 1M RSI <= 30
+       Bullish Setup
+
+    4. 15M RSI >= 60 AND 1M RSI >= 70
+       Bearish Setup
+
+    5. 1M RSI <= 30
+       1M Oversold
+
+    6. 1M RSI >= 70
+       1M Overbought
+    """
+
+    signals = []
+
+    # --------------------------------------------------------
+    # 15M EXTREME OVERSOLD
+    # --------------------------------------------------------
+
+    if rsi_15m < 20:
+
+        signals.append({
+            "type": "EXTREME_OVERSOLD",
+            "timeframe": "15M",
+            "message": (
+                f"15M RSI {rsi_15m:.2f} < 20"
+            ),
+        })
+
+    # --------------------------------------------------------
+    # 15M EXTREME OVERBOUGHT
+    # --------------------------------------------------------
+
+    if rsi_15m > 80:
+
+        signals.append({
+            "type": "EXTREME_OVERBOUGHT",
+            "timeframe": "15M",
+            "message": (
+                f"15M RSI {rsi_15m:.2f} > 80"
+            ),
+        })
+
+    # --------------------------------------------------------
+    # BULLISH SETUP
+    # --------------------------------------------------------
+
+    if (
+        rsi_15m <= 40
+        and
+        rsi_1m <= 30
+    ):
+
+        signals.append({
+            "type": "BULLISH_SETUP",
+            "timeframe": "15M + 1M",
+            "message": (
+                f"15M RSI {rsi_15m:.2f} <= 40 "
+                f"AND 1M RSI {rsi_1m:.2f} <= 30"
+            ),
+        })
+
+    # --------------------------------------------------------
+    # BEARISH SETUP
+    # --------------------------------------------------------
+
+    if (
+        rsi_15m >= 60
+        and
+        rsi_1m >= 70
+    ):
+
+        signals.append({
+            "type": "BEARISH_SETUP",
+            "timeframe": "15M + 1M",
+            "message": (
+                f"15M RSI {rsi_15m:.2f} >= 60 "
+                f"AND 1M RSI {rsi_1m:.2f} >= 70"
+            ),
+        })
+
+    # --------------------------------------------------------
+    # 1M OVERSOLD
+    # --------------------------------------------------------
+
+    if rsi_1m <= 30:
+
+        signals.append({
+            "type": "1M_OVERSOLD",
+            "timeframe": "1M",
+            "message": (
+                f"1M RSI {rsi_1m:.2f} <= 30"
+            ),
+        })
+
+    # --------------------------------------------------------
+    # 1M OVERBOUGHT
+    # --------------------------------------------------------
+
+    if rsi_1m >= 70:
+
+        signals.append({
+            "type": "1M_OVERBOUGHT",
+            "timeframe": "1M",
+            "message": (
+                f"1M RSI {rsi_1m:.2f} >= 70"
+            ),
+        })
+
+    return signals
+"""
+Bank Nifty Paper Trading Manager
+
+REAL MARKET DATA
+ZERO REAL ORDERS
+
+Six independent strategies:
+
+1M:
+    <= 30 -> CE -> +15
+    >= 70 -> PE -> +15
+
+15M:
+    < 20 -> CE -> +100
+    > 80 -> PE -> +100
+
+1M + 15M:
+    <=30 and <=40 -> CE -> +50
+    >=70 and >=60 -> PE -> +50
+"""
+
+import sqlite3
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+
+class PaperTradeManager:
+
+    def __init__(
+        self,
+        database_file,
+        timezone="Asia/Kolkata",
+        lot_quantity=1,
+    ):
+
+        self.database_file = Path(
+            database_file
+        )
+
+        self.database_file.parent.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
+        self.timezone = ZoneInfo(
+            timezone
+        )
+
+        self.lot_quantity = lot_quantity
+
+        self._create_database()
+
+    # ========================================================
+    # DATABASE
+    # ========================================================
+
+    def _connect(self):
+
+        return sqlite3.connect(
+            self.database_file
+        )
+
+    def _create_database(self):
+
+        with self._connect() as connection:
+
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS paper_trades (
+
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                    strategy TEXT NOT NULL,
+
+                    signal TEXT NOT NULL,
+
+                    option_type TEXT NOT NULL,
+
+                    strike REAL NOT NULL,
+
+                    trading_symbol TEXT,
+
+                    entry_time TEXT NOT NULL,
+
+                    entry_price REAL NOT NULL,
+
+                    target_price REAL NOT NULL,
+
+                    exit_time TEXT,
+
+                    exit_price REAL,
+
+                    target_points REAL NOT NULL,
+
+                    quantity INTEGER NOT NULL,
+
+                    pnl_points REAL,
+
+                    pnl_value REAL,
+
+                    status TEXT NOT NULL,
+
+                    entry_rsi_1m REAL,
+
+                    entry_rsi_15m REAL,
+
+                    entry_bank_nifty REAL,
+
+                    exit_reason TEXT,
+
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+
+            connection.commit()
+
+    # ========================================================
+    # CURRENT IST TIME
+    # ========================================================
+
+    def now(self):
+
+        return datetime.now(
+            self.timezone
+        )
+
+    # ========================================================
+    # FIND OPEN TRADE
+    # ========================================================
+
+    def get_open_trade(
+        self,
+        strategy,
+    ):
+
+        with self._connect() as connection:
+
+            cursor = connection.execute(
+                """
+                SELECT *
+                FROM paper_trades
+                WHERE strategy = ?
+                AND status = 'OPEN'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (strategy,)
+            )
+
+            return cursor.fetchone()
+
+    # ========================================================
+    # OPEN TRADE
+    # ========================================================
+
+    def open_trade(
+        self,
+        strategy,
+        signal,
+        option_type,
+        strike,
+        trading_symbol,
+        entry_price,
+        target_points,
+        rsi_1m,
+        rsi_15m,
+        bank_nifty,
+    ):
+
+        # ----------------------------------------------------
+        # NEVER CREATE DUPLICATE OPEN TRADE
+        # ----------------------------------------------------
+
+        existing = self.get_open_trade(
+            strategy
+        )
+
+        if existing is not None:
+
+            return False
+
+        entry_price = float(
+            entry_price
+        )
+
+        target_price = (
+            entry_price
+            +
+            float(target_points)
+        )
+
+        current_time = (
+            self.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        )
+
+        with self._connect() as connection:
+
+            connection.execute(
+                """
+                INSERT INTO paper_trades (
+
+                    strategy,
+                    signal,
+                    option_type,
+                    strike,
+                    trading_symbol,
+                    entry_time,
+                    entry_price,
+                    target_price,
+                    target_points,
+                    quantity,
+                    status,
+                    entry_rsi_1m,
+                    entry_rsi_15m,
+                    entry_bank_nifty,
+                    created_at
+
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    strategy,
+                    signal,
+                    option_type,
+                    float(strike),
+                    trading_symbol,
+                    current_time,
+                    entry_price,
+                    target_price,
+                    float(target_points),
+                    self.lot_quantity,
+                    "OPEN",
+                    float(rsi_1m),
+                    float(rsi_15m),
+                    float(bank_nifty),
+                    current_time,
+                )
+            )
+
+            connection.commit()
+
+        print()
+        print("=" * 70)
+        print("PAPER TRADE : VIRTUAL BUY")
+        print("=" * 70)
+        print(
+            f"Strategy      : {strategy}"
+        )
+        print(
+            f"Signal        : {signal}"
+        )
+        print(
+            f"Option        : {option_type}"
+        )
+        print(
+            f"Strike        : {strike}"
+        )
+        print(
+            f"Trading Symbol: {trading_symbol}"
+        )
+        print(
+            f"Entry LTP     : {entry_price:.2f}"
+        )
+        print(
+            f"Target        : {target_price:.2f}"
+        )
+        print(
+            f"Target Points : +{target_points:.2f}"
+        )
+        print(
+            f"RSI 1M        : {rsi_1m:.2f}"
+        )
+        print(
+            f"RSI 15M       : {rsi_15m:.2f}"
+        )
+        print(
+            f"Bank Nifty    : {bank_nifty:,.2f}"
+        )
+        print(
+            f"Time          : {current_time}"
+        )
+        print(
+            "REAL ORDER    : NO"
+        )
+        print("=" * 70)
+
+        return True
+
+    # ========================================================
+    # CLOSE TRADE
+    # ========================================================
+
+    def close_trade(
+        self,
+        trade_id,
+        exit_price,
+        exit_reason="TARGET",
+    ):
+
+        exit_price = float(
+            exit_price
+        )
+
+        current_time = (
+            self.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        )
+
+        with self._connect() as connection:
+
+            cursor = connection.execute(
+                """
+                SELECT
+                    entry_price,
+                    quantity
+                FROM paper_trades
+                WHERE id = ?
+                AND status = 'OPEN'
+                """,
+                (trade_id,)
+            )
+
+            row = cursor.fetchone()
+
+            if row is None:
+                return False
+
+            entry_price = float(
+                row[0]
+            )
+
+            quantity = int(
+                row[1]
+            )
+
+            pnl_points = (
+                exit_price
+                -
+                entry_price
+            )
+
+            pnl_value = (
+                pnl_points
+                *
+                quantity
+            )
+
+            connection.execute(
+                """
+                UPDATE paper_trades
+
+                SET
+                    exit_time = ?,
+                    exit_price = ?,
+                    pnl_points = ?,
+                    pnl_value = ?,
+                    status = 'CLOSED',
+                    exit_reason = ?
+
+                WHERE id = ?
+                """,
+                (
+                    current_time,
+                    exit_price,
+                    pnl_points,
+                    pnl_value,
+                    exit_reason,
+                    trade_id,
+                )
+            )
+
+            connection.commit()
+
+        print()
+        print("=" * 70)
+        print("PAPER TRADE : VIRTUAL SELL")
+        print("=" * 70)
+        print(
+            f"Trade ID      : {trade_id}"
+        )
+        print(
+            f"Entry Price   : {entry_price:.2f}"
+        )
+        print(
+            f"Exit Price    : {exit_price:.2f}"
+        )
+        print(
+            f"P&L Points    : {pnl_points:+.2f}"
+        )
+        print(
+            f"Virtual P&L   : {pnl_value:+.2f}"
+        )
+        print(
+            f"Exit Reason   : {exit_reason}"
+        )
+        print(
+            f"Time          : {current_time}"
+        )
+        print("=" * 70)
+
+        return True
+
+    # ========================================================
+    # CHECK TARGET
+    # ========================================================
+
+    def check_targets(
+        self,
+        option_prices,
+    ):
+
+        """
+        option_prices:
+
+            {
+                trading_symbol: current_ltp
+            }
+        """
+
+        with self._connect() as connection:
+
+            cursor = connection.execute(
+                """
+                SELECT
+                    id,
+                    trading_symbol,
+                    target_price
+                FROM paper_trades
+                WHERE status = 'OPEN'
+                """
+            )
+
+            open_trades = cursor.fetchall()
+
+        closed = []
+
+        for trade in open_trades:
+
+            trade_id = trade[0]
+            trading_symbol = trade[1]
+            target_price = float(
+                trade[2]
+            )
+
+            current_ltp = option_prices.get(
+                trading_symbol
+            )
+
+            if current_ltp is None:
+                continue
+
+            current_ltp = float(
+                current_ltp
+            )
+
+            if current_ltp >= target_price:
+
+                self.close_trade(
+                    trade_id=trade_id,
+                    exit_price=target_price,
+                    exit_reason="TARGET",
+                )
+
+                closed.append(
+                    trade_id
+                )
+
+        return closed
+
+    # ========================================================
+    # GET OPEN TRADES
+    # ========================================================
+
+    def get_open_trades(self):
+
+        with self._connect() as connection:
+
+            cursor = connection.execute(
+                """
+                SELECT
+                    id,
+                    strategy,
+                    signal,
+                    option_type,
+                    strike,
+                    trading_symbol,
+                    entry_time,
+                    entry_price,
+                    target_price,
+                    target_points,
+                    quantity
+                FROM paper_trades
+                WHERE status = 'OPEN'
+                ORDER BY id
+                """
+            )
+
+            return cursor.fetchall()
+
+    # ========================================================
+    # SUMMARY
+    # ========================================================
+
+    def get_summary(self):
+
+        with self._connect() as connection:
+
+            cursor = connection.execute(
+                """
+                SELECT
+                    COUNT(*),
+                    SUM(
+                        CASE
+                            WHEN status = 'CLOSED'
+                            THEN 1
+                            ELSE 0
+                        END
+                    ),
+                    SUM(
+                        CASE
+                            WHEN pnl_value > 0
+                            THEN 1
+                            ELSE 0
+                        END
+                    ),
+                    SUM(
+                        CASE
+                            WHEN pnl_value < 0
+                            THEN 1
+                            ELSE 0
+                        END
+                    ),
+                    COALESCE(
+                        SUM(pnl_points),
+                        0
+                    ),
+                    COALESCE(
+                        SUM(pnl_value),
+                        0
+                    )
+                FROM paper_trades
+                """
+            )
+
+            return cursor.fetchone()
+"""
+Bank Nifty Paper Trading Manager
+
+REAL MARKET DATA
+ZERO REAL ORDERS
+
+Six independent paper-trading strategies:
+
+1. 1M_CE
+       1M <= 30
+       CE
+       Target +15
+
+2. 1M_PE
+       1M >= 70
+       PE
+       Target +15
+
+3. 15M_CE
+       15M < 30
+       CE
+       Target +45
+
+4. 15M_PE
+       15M > 70
+       PE
+       Target +45
+
+5. COMBINED_CE
+       1M < 20 AND 15M < 25
+       CE
+       Target +75
+
+6. COMBINED_PE
+       1M > 80 AND 15M > 75
+       PE
+       Target +75
+
+IMPORTANT:
+
+Each strategy has its own independent lock.
+
+Example:
+
+    1M_CE OPEN
+        -> another 1M_CE BUY is blocked
+
+    1M_PE
+        -> still allowed
+
+    15M_CE
+        -> still allowed
+
+    COMBINED_CE
+        -> still allowed
+
+A strategy becomes available again only after
+its own trade is CLOSED.
+
+MANUAL EXIT:
+
+    Manual SELL price can be ANY valid price.
+
+    Example:
+
+        BUY    = 250
+        TARGET = 265
+        CURRENT = 235
+
+        Manual SELL = 280
+
+    The paper trade is closed at 280.
+
+    P&L = 280 - 250 = +30 points.
+
+    Manual SELL can be:
+        below BUY
+        equal to BUY
+        above BUY
+        below TARGET
+        equal to TARGET
+        above TARGET
+
+    The manual price overwrites the CURRENT price
+    for the paper-trade exit calculation.
+
+REAL ORDERS ARE NEVER PLACED.
+"""
+
+import sqlite3
+
+from datetime import datetime
+
+from pathlib import Path
+
+from zoneinfo import ZoneInfo
+
+
+class PaperTradeManager:
+    # ========================================================
+    # STRATEGY NAMES
+    # ========================================================
+
+    STRATEGY_1M_CE = "1M_CE"
+
+    STRATEGY_1M_PE = "1M_PE"
+
+    STRATEGY_15M_CE = "15M_CE"
+
+    STRATEGY_15M_PE = "15M_PE"
+
+    STRATEGY_COMBINED_CE = "COMBINED_CE"
+
+    STRATEGY_COMBINED_PE = "COMBINED_PE"
+
+    VALID_STRATEGIES = {
+        STRATEGY_1M_CE,
+        STRATEGY_1M_PE,
+        STRATEGY_15M_CE,
+        STRATEGY_15M_PE,
+        STRATEGY_COMBINED_CE,
+        STRATEGY_COMBINED_PE,
+    }
+
+    # ========================================================
+    # INIT
+    # ========================================================
+
+    def __init__(
+            self,
+            database_file,
+            timezone="Asia/Kolkata",
+            lot_quantity=1,
+    ):
+
+        self.database_file = Path(
+            database_file
+        )
+
+        self.database_file.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        self.timezone = ZoneInfo(
+            timezone
+        )
+
+        self.lot_quantity = int(
+            lot_quantity
+        )
+
+        self._create_database()
+
+    # ========================================================
+    # DATABASE CONNECTION
+    # ========================================================
+
+    def _connect(self):
+
+        return sqlite3.connect(
+            self.database_file
+        )
+
+    # ========================================================
+    # CREATE DATABASE
+    # ========================================================
+
+    def _create_database(self):
+
+        with self._connect() as connection:
+            connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS paper_trades (
+
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                    strategy TEXT NOT NULL,
+
+                    signal TEXT NOT NULL,
+
+                    option_type TEXT NOT NULL,
+
+                    strike REAL NOT NULL,
+
+                    trading_symbol TEXT,
+
+                    entry_time TEXT NOT NULL,
+
+                    entry_price REAL NOT NULL,
+
+                    target_price REAL NOT NULL,
+
+                    target_points REAL NOT NULL,
+
+                    exit_time TEXT,
+
+                    exit_price REAL,
+
+                    quantity INTEGER NOT NULL,
+
+                    pnl_points REAL,
+
+                    pnl_value REAL,
+
+                    status TEXT NOT NULL,
+
+                    entry_rsi_1m REAL,
+
+                    entry_rsi_15m REAL,
+
+                    entry_bank_nifty REAL,
+
+                    exit_reason TEXT,
+
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+
+            connection.commit()
+
+    # ========================================================
+    # TIME
+    # ========================================================
+
+    def now(self):
+
+        return datetime.now(
+            self.timezone
+        )
+
+    # ========================================================
+    # VALIDATE STRATEGY
+    # ========================================================
+
+    def validate_strategy(
+            self,
+            strategy,
+    ):
+
+        if strategy not in self.VALID_STRATEGIES:
+            raise ValueError(
+                f"Invalid paper-trading strategy: "
+                f"{strategy}. "
+                f"Expected one of: "
+                f"{sorted(self.VALID_STRATEGIES)}"
+            )
+
+        return True
+
+    # ========================================================
+    # OPEN TRADE FOR ONE STRATEGY
+    # ========================================================
+
+    def get_open_trade(
+            self,
+            strategy,
+    ):
+
+        self.validate_strategy(
+            strategy
+        )
+
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                SELECT *
+                FROM paper_trades
+
+                WHERE strategy = ?
+                AND status = 'OPEN'
+
+                ORDER BY id DESC
+
+                LIMIT 1
+                """,
+                (
+                    strategy,
+                ),
+            )
+
+            return cursor.fetchone()
+
+    # ========================================================
+    # CHECK WHETHER STRATEGY IS LOCKED
+    # ========================================================
+
+    def is_strategy_locked(
+            self,
+            strategy,
+    ):
+
+        return (
+                self.get_open_trade(
+                    strategy
+                )
+                is not None
+        )
+
+    # ========================================================
+    # OPEN VIRTUAL TRADE
+    # ========================================================
+
+    def open_trade(
+            self,
+            strategy,
+            signal,
+            option_type,
+            strike,
+            trading_symbol,
+            entry_price,
+            target_points,
+            rsi_1m,
+            rsi_15m,
+            bank_nifty,
+    ):
+
+        self.validate_strategy(
+            strategy
+        )
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        # Do not buy the same strategy again while OPEN.
+        # ----------------------------------------------------
+
+        existing_trade = (
+            self.get_open_trade(
+                strategy
+            )
+        )
+
+        if existing_trade is not None:
+            # PAPER TRADE BLOCKED PRINT DISABLED.
+            # print(
+            #     f"[PAPER TRADE BLOCKED] "
+            #     f"{strategy} already has an OPEN trade."
+            # )
+
+            return False
+
+        entry_price = float(
+            entry_price
+        )
+
+        target_points = float(
+            target_points
+        )
+
+        target_price = (
+                entry_price
+                +
+                target_points
+        )
+
+        current_time = (
+            self.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        )
+
+        # ----------------------------------------------------
+        # INSERT PAPER TRADE
+        # ----------------------------------------------------
+
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO paper_trades (
+
+                    strategy,
+
+                    signal,
+
+                    option_type,
+
+                    strike,
+
+                    trading_symbol,
+
+                    entry_time,
+
+                    entry_price,
+
+                    target_price,
+
+                    target_points,
+
+                    quantity,
+
+                    status,
+
+                    entry_rsi_1m,
+
+                    entry_rsi_15m,
+
+                    entry_bank_nifty,
+
+                    created_at
+
+                )
+
+                VALUES (
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?,
+                    ?
+                )
+                """,
+                (
+                    strategy,
+
+                    signal,
+
+                    option_type,
+
+                    float(strike),
+
+                    trading_symbol,
+
+                    current_time,
+
+                    entry_price,
+
+                    target_price,
+
+                    target_points,
+
+                    self.lot_quantity,
+
+                    "OPEN",
+
+                    float(rsi_1m),
+
+                    float(rsi_15m),
+
+                    float(bank_nifty),
+
+                    current_time,
+                ),
+            )
+
+            connection.commit()
+
+            trade_id = (
+                cursor.lastrowid
+            )
+
+        # ----------------------------------------------------
+        # DISPLAY BUY - DISABLED HERE.
+        # Continuous monitor prints the confirmed PAPER BUY.
+        # Original print block intentionally retained below.
+        # ----------------------------------------------------
+
+        #         print()
+        #
+        #         print(
+        #             "=" * 70
+        #         )
+        #
+        #         print(
+        #             "PAPER TRADE : VIRTUAL BUY"
+        #         )
+        #
+        #         print(
+        #             "=" * 70
+        #         )
+        #
+        #         print(
+        #             f"Trade ID       : {trade_id}"
+        #         )
+        #
+        #         print(
+        #             f"Strategy       : {strategy}"
+        #         )
+        #
+        #         print(
+        #             f"Signal         : {signal}"
+        #         )
+        #
+        #         print(
+        #             f"Option         : {option_type}"
+        #         )
+        #
+        #         print(
+        #             f"Strike         : {strike}"
+        #         )
+        #
+        #         print(
+        #             f"Trading Symbol : {trading_symbol}"
+        #         )
+        #
+        #         print(
+        #             f"Entry LTP      : {entry_price:.2f}"
+        #         )
+        #
+        #         print(
+        #             f"Target         : {target_price:.2f}"
+        #         )
+        #
+        #         print(
+        #             f"Target Points  : +{target_points:.2f}"
+        #         )
+        #
+        #         print(
+        #             f"RSI 1M         : {rsi_1m:.2f}"
+        #         )
+        #
+        #         print(
+        #             f"RSI 15M        : {rsi_15m:.2f}"
+        #         )
+        #
+        #         print(
+        #             f"Bank Nifty     : {bank_nifty:,.2f}"
+        #         )
+        #
+        #         print(
+        #             f"Time           : {current_time}"
+        #         )
+        #
+        #         print(
+        #             "REAL ORDER     : NO"
+        #         )
+        #
+        #         print(
+        #             "STATUS         : OPEN"
+        #         )
+        #
+        #         print(
+        #             "=" * 70
+        #         )
+        #
+
+        return True
+
+    # ========================================================
+    # CLOSE VIRTUAL TRADE
+    # ========================================================
+
+    def close_trade(
+            self,
+            trade_id,
+            exit_price,
+            exit_reason="TARGET",
+    ):
+
+        exit_price = float(
+            exit_price
+        )
+
+        if exit_price <= 0:
+            raise ValueError(
+                "Exit price must be greater than 0."
+            )
+
+        current_time = (
+            self.now().strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        )
+
+        with self._connect() as connection:
+
+            cursor = connection.execute(
+                """
+                SELECT
+                    strategy,
+                    entry_price,
+                    quantity
+
+                FROM paper_trades
+
+                WHERE id = ?
+
+                AND status = 'OPEN'
+                """,
+                (
+                    trade_id,
+                ),
+            )
+
+            row = cursor.fetchone()
+
+            if row is None:
+                return False
+
+            strategy = row[0]
+
+            entry_price = float(
+                row[1]
+            )
+
+            quantity = int(
+                row[2]
+            )
+
+            # ------------------------------------------------
+            # P&L
+            #
+            # SELL - BUY
+            #
+            # Example:
+            # BUY  = 250
+            # SELL = 280
+            #
+            # P&L = +30
+            # ------------------------------------------------
+
+            pnl_points = (
+                    exit_price
+                    -
+                    entry_price
+            )
+
+            pnl_value = (
+                    pnl_points
+                    *
+                    quantity
+            )
+
+            connection.execute(
+                """
+                UPDATE paper_trades
+
+                SET
+
+                    exit_time = ?,
+
+                    exit_price = ?,
+
+                    pnl_points = ?,
+
+                    pnl_value = ?,
+
+                    status = 'CLOSED',
+
+                    exit_reason = ?
+
+                WHERE id = ?
+                """,
+                (
+                    current_time,
+
+                    exit_price,
+
+                    pnl_points,
+
+                    pnl_value,
+
+                    exit_reason,
+
+                    trade_id,
+                ),
+            )
+
+            connection.commit()
+
+        # ----------------------------------------------------
+        # IMPORTANT:
+        #
+        # Once status becomes CLOSED,
+        # get_open_trade(strategy) returns None.
+        #
+        # Therefore this strategy is automatically UNLOCKED.
+        # ----------------------------------------------------
+
+        # DISPLAY SELL - DISABLED HERE.
+        # Continuous monitor prints the confirmed PAPER SELL.
+        # Original print block intentionally retained below.
+        # ----------------------------------------------------
+
+        #         print()
+        #
+        #         print(
+        #             "=" * 70
+        #         )
+        #
+        #         print(
+        #             "PAPER TRADE : VIRTUAL SELL"
+        #         )
+        #
+        #         print(
+        #             "=" * 70
+        #         )
+        #
+        #         print(
+        #             f"Trade ID     : {trade_id}"
+        #         )
+        #
+        #         print(
+        #             f"Strategy     : {strategy}"
+        #         )
+        #
+        #         print(
+        #             f"Entry Price  : {entry_price:.2f}"
+        #         )
+        #
+        #         print(
+        #             f"Exit Price   : {exit_price:.2f}"
+        #         )
+        #
+        #         print(
+        #             f"P&L Points   : {pnl_points:+.2f}"
+        #         )
+        #
+        #         print(
+        #             f"Virtual P&L  : {pnl_value:+.2f}"
+        #         )
+        #
+        #         print(
+        #             f"Exit Reason  : {exit_reason}"
+        #         )
+        #
+        #         print(
+        #             f"Time         : {current_time}"
+        #         )
+        #
+        #         print(
+        #             "REAL ORDER   : NO"
+        #         )
+        #
+        #         print(
+        #             "STATUS       : CLOSED"
+        #         )
+        #
+        #         print(
+        #             "=" * 70
+        #         )
+        #
+
+        return True
+
+    # ========================================================
+    # MANUAL EXIT
+    # ========================================================
+    #
+    # Manual SELL price can be ANY valid price.
+    #
+    # It can be:
+    #
+    #   below BUY
+    #   equal to BUY
+    #   above BUY
+    #   below TARGET
+    #   equal to TARGET
+    #   above TARGET
+    #
+    # The manually entered price becomes the actual
+    # paper SELL price.
+    #
+    # The live CURRENT price is NOT used for the
+    # manual exit calculation.
+    #
+    # Manual exit is allowed at ANY TIME.
+    #
+    # REAL ORDER = NO
+    # ========================================================
+
+    def manual_exit(
+            self,
+            trade_id,
+            exit_price,
+    ):
+
+        try:
+
+            exit_price = float(
+                exit_price
+            )
+
+        except (
+                TypeError,
+                ValueError,
+        ):
+
+            raise ValueError(
+                "Manual exit price must be a valid number."
+            )
+
+        if exit_price <= 0:
+            raise ValueError(
+                "Manual exit price must be greater than 0."
+            )
+
+        # ----------------------------------------------------
+        # Use the normal close_trade() method.
+        #
+        # This guarantees:
+        #
+        # exit_price  = manual price
+        # status      = CLOSED
+        # pnl_points  = manual price - entry price
+        # pnl_value   = pnl_points * quantity
+        # exit_reason = MANUAL EXIT
+        # ----------------------------------------------------
+
+        return self.close_trade(
+            trade_id=trade_id,
+
+            exit_price=exit_price,
+
+            exit_reason="MANUAL EXIT",
+        )
+
+    # ========================================================
+    # CHECK TARGETS
+    # ========================================================
+
+    def check_targets(
+            self,
+            option_prices,
+    ):
+
+        with self._connect() as connection:
+
+            cursor = connection.execute(
+                """
+                SELECT
+
+                    id,
+
+                    strategy,
+
+                    trading_symbol,
+
+                    target_price
+
+                FROM paper_trades
+
+                WHERE status = 'OPEN'
+                """
+            )
+
+            trades = cursor.fetchall()
+
+        closed = []
+
+        for trade in trades:
+
+            trade_id = trade[0]
+
+            strategy = trade[1]
+
+            symbol = trade[2]
+
+            target_price = float(
+                trade[3]
+            )
+
+            if not symbol:
+                continue
+
+            if symbol not in option_prices:
+                continue
+
+            current_ltp = float(
+                option_prices[
+                    symbol
+                ]
+            )
+
+            if current_ltp >= target_price:
+
+                closed_successfully = (
+                    self.close_trade(
+
+                        trade_id=trade_id,
+
+                        exit_price=target_price,
+
+                        exit_reason="TARGET",
+                    )
+                )
+
+                if closed_successfully:
+                    closed.append(
+                        trade_id
+                    )
+
+        return closed
+
+    # ========================================================
+    # GET ALL OPEN TRADES
+    # ========================================================
+
+    def get_open_trades(self):
+
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                SELECT
+
+                    id,
+
+                    strategy,
+
+                    signal,
+
+                    option_type,
+
+                    strike,
+
+                    trading_symbol,
+
+                    entry_time,
+
+                    entry_price,
+
+                    target_price,
+
+                    target_points,
+
+                    quantity
+
+                FROM paper_trades
+
+                WHERE status = 'OPEN'
+
+                ORDER BY id
+                """
+            )
+
+            return cursor.fetchall()
+
+    # ========================================================
+    # GET OPEN TRADE BY STRATEGY
+    # ========================================================
+
+    def get_open_trade_by_strategy(
+            self,
+            strategy,
+    ):
+
+        return self.get_open_trade(
+            strategy
+        )
+
+    # ========================================================
+    # GET STRATEGY STATUS
+    # ========================================================
+
+    def get_strategy_status(self):
+
+        status = {}
+
+        for strategy in sorted(
+                self.VALID_STRATEGIES
+        ):
+            trade = (
+                self.get_open_trade(
+                    strategy
+                )
+            )
+
+            status[strategy] = (
+
+                "OPEN"
+
+                if trade is not None
+
+                else
+
+                "AVAILABLE"
+            )
+
+        return status
+
+    # ========================================================
+    # PRINT STRATEGY STATUS
+    # ========================================================
+
+    def print_strategy_status(self):
+
+        print()
+
+        print(
+            "=" * 70
+        )
+
+        print(
+            "PAPER TRADING STRATEGY STATUS"
+        )
+
+        print(
+            "=" * 70
+        )
+
+        status = (
+            self.get_strategy_status()
+        )
+
+        for strategy in sorted(
+                status
+        ):
+            print(
+                f"{strategy:<15} : "
+                f"{status[strategy]}"
+            )
+
+        print(
+            "=" * 70
+        )
+
+    # ========================================================
+    # SUMMARY
+    # ========================================================
+
+    def get_summary(self):
+
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                SELECT
+
+                    COUNT(*),
+
+                    SUM(
+                        CASE
+
+                            WHEN status = 'CLOSED'
+
+                            THEN 1
+
+                            ELSE 0
+
+                        END
+                    ),
+
+                    SUM(
+                        CASE
+
+                            WHEN pnl_value > 0
+
+                            THEN 1
+
+                            ELSE 0
+
+                        END
+                    ),
+
+                    SUM(
+                        CASE
+
+                            WHEN pnl_value < 0
+
+                            THEN 1
+
+                            ELSE 0
+
+                        END
+                    ),
+
+                    COALESCE(
+                        SUM(pnl_points),
+                        0
+                    ),
+
+                    COALESCE(
+                        SUM(pnl_value),
+                        0
+                    )
+
+                FROM paper_trades
+                """
+            )
+
+            return cursor.fetchone()
+# ============================================================
+# BANK NIFTY PAPER TRADING DASHBOARD
+# ============================================================
+
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = (
+    Path(__file__)
+    .resolve()
+    .parent
+    .parent
+)
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# ============================================================
+# IMPORTS
+# ============================================================
+
+import sqlite3
+import time
+from datetime import datetime
+
+import streamlit as st
+
+from data.historical_data import GrowwHistoricalData
+
+from indicators.rsi import (
+    candle_closes_to_series,
+    calculate_latest_rsi,
+)
+
+from config.settings import (
+    RSI_PERIOD,
+    RSI_1_BULLISH,
+    RSI_1_BEARISH,
+    RSI_15_EXTREME_OVERSOLD,
+    RSI_15_EXTREME_OVERBOUGHT,
+    RSI_15_BULLISH,
+    RSI_15_BEARISH,
+    RSI_1_COMBINED_BULLISH,
+    RSI_1_COMBINED_BEARISH,
+    PAPER_DATABASE_FILE,
+    TIME_ZONE,
+)
+
+from paper_trading.trade_manager import PaperTradeManager
+
+
+# ============================================================
+# TIMEZONE
+# ============================================================
+
+try:
+    from zoneinfo import ZoneInfo
+
+    TIMEZONE = ZoneInfo(TIME_ZONE)
+
+except Exception:
+    TIMEZONE = None
+
+
+# ============================================================
+# STREAMLIT PAGE
+# ============================================================
+
+st.set_page_config(
+    page_title="Bank Nifty Paper Trading",
+    page_icon="📊",
+    layout="wide",
+)
+
+
+# ============================================================
+# DATABASE
+# ============================================================
+
+DATABASE = PAPER_DATABASE_FILE
+
+
+# ============================================================
+# PAPER TRADE MANAGER
+# ============================================================
+
+@st.cache_resource
+def get_paper_manager():
+
+    return PaperTradeManager(
+        database_file=DATABASE,
+        timezone=TIME_ZONE,
+    )
+
+
+# ============================================================
+# HISTORICAL DATA
+# ============================================================
+
+@st.cache_resource
+def get_historical():
+
+    return GrowwHistoricalData()
+
+
+# ============================================================
+# MARKET DATA
+# ============================================================
+
+def get_market_data():
+
+    historical = get_historical()
+
+    data_1m = historical.get_1_minute_candles()
+
+    data_15m = historical.get_15_minute_candles()
+
+    candles_1m = data_1m.get(
+        "candles",
+        []
+    )
+
+    candles_15m = data_15m.get(
+        "candles",
+        []
+    )
+
+    if not candles_1m:
+        return None
+
+    if not candles_15m:
+        return None
+
+    closes_1m = candle_closes_to_series(
+        candles_1m
+    )
+
+    closes_15m = candle_closes_to_series(
+        candles_15m
+    )
+
+    rsi_1m = calculate_latest_rsi(
+        closes_1m,
+        period=RSI_PERIOD,
+    )
+
+    rsi_15m = calculate_latest_rsi(
+        closes_15m,
+        period=RSI_PERIOD,
+    )
+
+    bank_nifty = float(
+        candles_1m[-1][4]
+    )
+
+    candle_time = candles_1m[-1][0]
+
+    return {
+        "rsi_1m": rsi_1m,
+        "rsi_15m": rsi_15m,
+        "bank_nifty": bank_nifty,
+        "candle_time": candle_time,
+    }
+
+
+# ============================================================
+# SIX RSI CONDITIONS
+# ============================================================
+
+def get_conditions(
+    rsi_1m,
+    rsi_15m,
+):
+
+    return [
+
+        {
+            "number": 1,
+
+            "condition":
+                f"1M <= {RSI_1_BULLISH}",
+
+            "strategy":
+                "1M_CE",
+
+            "option":
+                "CE",
+
+            "target":
+                15,
+
+            "met":
+                rsi_1m <= RSI_1_BULLISH,
+        },
+
+        {
+            "number": 2,
+
+            "condition":
+                f"1M >= {RSI_1_BEARISH}",
+
+            "strategy":
+                "1M_PE",
+
+            "option":
+                "PE",
+
+            "target":
+                15,
+
+            "met":
+                rsi_1m >= RSI_1_BEARISH,
+        },
+
+        {
+            "number": 3,
+
+            "condition":
+                f"15M < {RSI_15_EXTREME_OVERSOLD}",
+
+            "strategy":
+                "15M_CE",
+
+            "option":
+                "CE",
+
+            "target":
+                45,
+
+            "met":
+                rsi_15m < RSI_15_EXTREME_OVERSOLD,
+        },
+
+        {
+            "number": 4,
+
+            "condition":
+                f"15M > {RSI_15_EXTREME_OVERBOUGHT}",
+
+            "strategy":
+                "15M_PE",
+
+            "option":
+                "PE",
+
+            "target":
+                45,
+
+            "met":
+                rsi_15m > RSI_15_EXTREME_OVERBOUGHT,
+        },
+
+        {
+            "number": 5,
+
+            "condition":
+                (
+                    f"1M < "
+                    f"{RSI_1_COMBINED_BULLISH} "
+                    f"AND "
+                    f"15M < "
+                    f"{RSI_15_BULLISH}"
+                ),
+
+            "strategy":
+                "COMBINED_CE",
+
+            "option":
+                "CE",
+
+            "target":
+                75,
+
+            "met":
+                (
+                    rsi_1m < RSI_1_COMBINED_BULLISH
+                    and
+                    rsi_15m < RSI_15_BULLISH
+                ),
+        },
+
+        {
+            "number": 6,
+
+            "condition":
+                (
+                    f"1M > "
+                    f"{RSI_1_COMBINED_BEARISH} "
+                    f"AND "
+                    f"15M > "
+                    f"{RSI_15_BEARISH}"
+                ),
+
+            "strategy":
+                "COMBINED_PE",
+
+            "option":
+                "PE",
+
+            "target":
+                75,
+
+            "met":
+                (
+                    rsi_1m > RSI_1_COMBINED_BEARISH
+                    and
+                    rsi_15m > RSI_15_BEARISH
+                ),
+        },
+    ]
+
+
+# ============================================================
+# DATABASE - GET ALL TRADES
+# ============================================================
+
+def get_trades():
+
+    connection = sqlite3.connect(
+        DATABASE
+    )
+
+    connection.row_factory = sqlite3.Row
+
+    rows = connection.execute(
+        """
+        SELECT
+            id,
+            strategy,
+            signal,
+            option_type,
+            strike,
+            trading_symbol,
+            entry_time,
+            entry_price,
+            target_price,
+            target_points,
+            exit_time,
+            exit_price,
+            quantity,
+            pnl_points,
+            pnl_value,
+            status,
+            entry_rsi_1m,
+            entry_rsi_15m,
+            entry_bank_nifty,
+            exit_reason
+        FROM paper_trades
+        ORDER BY id DESC
+        """
+    ).fetchall()
+
+    connection.close()
+
+    return [
+        dict(row)
+        for row in rows
+    ]
+
+
+# ============================================================
+# CURRENT OPTION LTP
+# ============================================================
+
+def get_option_price(symbol):
+
+    try:
+
+        historical = get_historical()
+
+        value = (
+            historical
+            .get_option_ltp_by_symbol(
+                symbol
+            )
+        )
+
+        if value is None:
+            return None
+
+        return float(value)
+
+    except Exception:
+        return None
+
+
+# ============================================================
+# UPDATE LIVE PAPER VALUES
+# ============================================================
+
+def update_current_values(trades):
+
+    for trade in trades:
+
+        if trade["status"] == "OPEN":
+
+            current = get_option_price(
+                trade["trading_symbol"]
+            )
+
+            trade["current_price"] = current
+
+            if current is not None:
+
+                trade["current_pnl_points"] = (
+                    current
+                    -
+                    trade["entry_price"]
+                )
+
+                trade["current_pnl_value"] = (
+                    trade["current_pnl_points"]
+                    *
+                    trade["quantity"]
+                )
+
+                trade["to_target"] = (
+                    trade["target_price"]
+                    -
+                    current
+                )
+
+            else:
+
+                trade["current_pnl_points"] = None
+
+                trade["current_pnl_value"] = None
+
+                trade["to_target"] = None
+
+        else:
+
+            trade["current_price"] = (
+                trade["exit_price"]
+            )
+
+            trade["current_pnl_points"] = (
+                trade["pnl_points"]
+            )
+
+            trade["current_pnl_value"] = (
+                trade["pnl_value"]
+            )
+
+            trade["to_target"] = 0
+
+    return trades
+
+
+# ============================================================
+# P&L CALCULATION
+# ============================================================
+
+def calculate_pnl_statistics(
+    trades
+):
+
+    closed = [
+        trade
+        for trade in trades
+        if trade["status"] == "CLOSED"
+    ]
+
+    open_trades = [
+        trade
+        for trade in trades
+        if trade["status"] == "OPEN"
+    ]
+
+    # --------------------------------------------------------
+    # CLOSED P&L
+    # --------------------------------------------------------
+
+    winning = [
+        trade
+        for trade in closed
+        if (
+            trade["pnl_points"] is not None
+            and
+            trade["pnl_points"] > 0
+        )
+    ]
+
+    losing = [
+        trade
+        for trade in closed
+        if (
+            trade["pnl_points"] is not None
+            and
+            trade["pnl_points"] < 0
+        )
+    ]
+
+    breakeven = [
+        trade
+        for trade in closed
+        if (
+            trade["pnl_points"] is not None
+            and
+            trade["pnl_points"] == 0
+        )
+    ]
+
+    gross_profit = sum(
+        (
+            trade["pnl_value"] or 0
+        )
+        for trade in winning
+    )
+
+    gross_loss = sum(
+        (
+            trade["pnl_value"] or 0
+        )
+        for trade in losing
+    )
+
+    closed_pnl = sum(
+        (
+            trade["pnl_value"] or 0
+        )
+        for trade in closed
+    )
+
+    # --------------------------------------------------------
+    # OPEN P&L
+    # --------------------------------------------------------
+
+    open_pnl = sum(
+        (
+            trade["current_pnl_value"] or 0
+        )
+        for trade in open_trades
+    )
+
+    total_pnl = (
+        closed_pnl
+        +
+        open_pnl
+    )
+
+    # --------------------------------------------------------
+    # WIN RATE
+    # --------------------------------------------------------
+
+    if closed:
+
+        win_rate = (
+            len(winning)
+            /
+            len(closed)
+            *
+            100
+        )
+
+    else:
+
+        win_rate = 0.0
+
+    # --------------------------------------------------------
+    # AVERAGES
+    # --------------------------------------------------------
+
+    if winning:
+
+        average_profit = (
+            gross_profit
+            /
+            len(winning)
+        )
+
+    else:
+
+        average_profit = 0.0
+
+    if losing:
+
+        average_loss = (
+            gross_loss
+            /
+            len(losing)
+        )
+
+    else:
+
+        average_loss = 0.0
+
+    # --------------------------------------------------------
+    # LARGEST WIN / LOSS
+    # --------------------------------------------------------
+
+    if winning:
+
+        largest_profit = max(
+            trade["pnl_value"]
+            for trade in winning
+        )
+
+    else:
+
+        largest_profit = 0.0
+
+    if losing:
+
+        largest_loss = min(
+            trade["pnl_value"]
+            for trade in losing
+        )
+
+    else:
+
+        largest_loss = 0.0
+
+    # --------------------------------------------------------
+    # PROFIT FACTOR
+    #
+    # Gross Profit / Absolute Gross Loss
+    # --------------------------------------------------------
+
+    if gross_loss < 0:
+
+        profit_factor = (
+            gross_profit
+            /
+            abs(gross_loss)
+        )
+
+    else:
+
+        profit_factor = (
+            float("inf")
+            if gross_profit > 0
+            else 0.0
+        )
+
+    return {
+
+        "total_trades":
+            len(trades),
+
+        "closed_trades":
+            len(closed),
+
+        "open_trades":
+            len(open_trades),
+
+        "winning":
+            len(winning),
+
+        "losing":
+            len(losing),
+
+        "breakeven":
+            len(breakeven),
+
+        "gross_profit":
+            gross_profit,
+
+        "gross_loss":
+            gross_loss,
+
+        "closed_pnl":
+            closed_pnl,
+
+        "open_pnl":
+            open_pnl,
+
+        "total_pnl":
+            total_pnl,
+
+        "win_rate":
+            win_rate,
+
+        "average_profit":
+            average_profit,
+
+        "average_loss":
+            average_loss,
+
+        "largest_profit":
+            largest_profit,
+
+        "largest_loss":
+            largest_loss,
+
+        "profit_factor":
+            profit_factor,
+    }
+
+
+# ============================================================
+# HEADER
+# ============================================================
+
+st.title(
+    "📊 Bank Nifty Paper Trading Dashboard"
+)
+
+st.caption(
+    "PAPER TRADING ONLY • NO REAL ORDERS"
+)
+
+
+# ============================================================
+# SIDEBAR
+# ============================================================
+
+st.sidebar.header(
+    "Dashboard Settings"
+)
+
+refresh_seconds = st.sidebar.number_input(
+    "Refresh interval",
+    min_value=3,
+    max_value=60,
+    value=3,
+    step=1,
+)
+
+
+if st.sidebar.button(
+    "Refresh Now"
+):
+
+    st.rerun()
+
+
+# ============================================================
+# MARKET DATA
+# ============================================================
+
+try:
+
+    market = get_market_data()
+
+except Exception as error:
+
+    st.error(
+        f"Market data error: {error}"
+    )
+
+    st.stop()
+
+
+if market is None:
+
+    st.warning(
+        "Market data unavailable."
+    )
+
+    st.stop()
+
+
+rsi_1m = market["rsi_1m"]
+
+rsi_15m = market["rsi_15m"]
+
+bank_nifty = market["bank_nifty"]
+
+candle_time = market["candle_time"]
+
+
+# ============================================================
+# MARKET DISPLAY
+# ============================================================
+
+st.subheader(
+    "Market"
+)
+
+col1, col2, col3, col4 = st.columns(4)
+
+col1.metric(
+    "Bank Nifty",
+    f"{bank_nifty:,.2f}",
+)
+
+col2.metric(
+    "1M RSI",
+    f"{rsi_1m:.2f}",
+)
+
+col3.metric(
+    "15M RSI",
+    f"{rsi_15m:.2f}",
+)
+
+current_time = (
+    datetime.now(TIMEZONE)
+    if TIMEZONE
+    else
+    datetime.now()
+)
+
+col4.metric(
+    "Current Time",
+    current_time.strftime("%H:%M:%S"),
+)
+
+st.caption(
+    f"Latest candle: {candle_time}"
+)
+
+
+# ============================================================
+# SIX CONDITIONS
+# ============================================================
+
+st.subheader(
+    "Six RSI Trading Conditions"
+)
+
+conditions = get_conditions(
+    rsi_1m,
+    rsi_15m,
+)
+
+condition_table = []
+
+for condition in conditions:
+
+    condition_table.append({
+
+        "Condition":
+            condition["number"],
+
+        "Rule":
+            condition["condition"],
+
+        "Strategy":
+            condition["strategy"],
+
+        "Option":
+            condition["option"],
+
+        "Target":
+            f"+{condition['target']}",
+
+        "Status":
+            (
+                "🟢 MET"
+                if condition["met"]
+                else
+                "⚪ NOT MET"
+            ),
+    })
+
+
+st.dataframe(
+    condition_table,
+    width="stretch",
+    hide_index=True,
+)
+
+
+# ============================================================
+# PAPER TRADES
+# ============================================================
+
+trades = get_trades()
+
+trades = update_current_values(
+    trades
+)
+
+open_trades = [
+    trade
+    for trade in trades
+    if trade["status"] == "OPEN"
+]
+
+closed_trades = [
+    trade
+    for trade in trades
+    if trade["status"] == "CLOSED"
+]
+
+
+# ============================================================
+# P&L STATISTICS
+# ============================================================
+
+pnl = calculate_pnl_statistics(
+    trades
+)
+
+
+# ============================================================
+# PROFIT & LOSS STATEMENT
+# ============================================================
+
+st.subheader(
+    "💰 Profit & Loss Statement"
+)
+
+st.caption(
+    "Closed P&L uses actual SELL prices. "
+    "Open P&L uses the latest live option price."
+)
+
+
+# ============================================================
+# TOP P&L METRICS
+# ============================================================
+
+col1, col2, col3, col4 = st.columns(4)
+
+col1.metric(
+    "Closed P&L",
+    f"{pnl['closed_pnl']:+,.2f}",
+)
+
+col2.metric(
+    "Open P&L",
+    f"{pnl['open_pnl']:+,.2f}",
+)
+
+col3.metric(
+    "Total P&L",
+    f"{pnl['total_pnl']:+,.2f}",
+)
+
+col4.metric(
+    "Win Rate",
+    f"{pnl['win_rate']:.2f}%",
+)
+
+
+# ============================================================
+# TRADE STATISTICS
+# ============================================================
+
+col1, col2, col3, col4, col5 = st.columns(5)
+
+col1.metric(
+    "Total Trades",
+    pnl["total_trades"],
+)
+
+col2.metric(
+    "Winning",
+    pnl["winning"],
+)
+
+col3.metric(
+    "Losing",
+    pnl["losing"],
+)
+
+col4.metric(
+    "Breakeven",
+    pnl["breakeven"],
+)
+
+col5.metric(
+    "Open",
+    pnl["open_trades"],
+)
+
+
+# ============================================================
+# PROFIT / LOSS DETAILS
+# ============================================================
+
+st.markdown(
+    "### P&L Details"
+)
+
+pnl_details = [
+
+    {
+        "Metric":
+            "Gross Profit",
+
+        "Value":
+            pnl["gross_profit"],
+    },
+
+    {
+        "Metric":
+            "Gross Loss",
+
+        "Value":
+            pnl["gross_loss"],
+    },
+
+    {
+        "Metric":
+            "Net Closed P&L",
+
+        "Value":
+            pnl["closed_pnl"],
+    },
+
+    {
+        "Metric":
+            "Open P&L",
+
+        "Value":
+            pnl["open_pnl"],
+    },
+
+    {
+        "Metric":
+            "Total P&L",
+
+        "Value":
+            pnl["total_pnl"],
+    },
+
+    {
+        "Metric":
+            "Average Profit / Winning Trade",
+
+        "Value":
+            pnl["average_profit"],
+    },
+
+    {
+        "Metric":
+            "Average Loss / Losing Trade",
+
+        "Value":
+            pnl["average_loss"],
+    },
+
+    {
+        "Metric":
+            "Largest Profit",
+
+        "Value":
+            pnl["largest_profit"],
+    },
+
+    {
+        "Metric":
+            "Largest Loss",
+
+        "Value":
+            pnl["largest_loss"],
+    },
+
+]
+
+
+pnl_display = [
+
+    {
+        "Metric":
+            row["Metric"],
+
+        "P&L":
+            f"{row['Value']:+,.2f}",
+    }
+
+    for row in pnl_details
+]
+
+
+st.dataframe(
+    pnl_display,
+    width="stretch",
+    hide_index=True,
+)
+
+
+# ============================================================
+# PERFORMANCE RATIO
+# ============================================================
+
+col1, col2, col3 = st.columns(3)
+
+if pnl["profit_factor"] == float("inf"):
+
+    profit_factor_text = "∞"
+
+else:
+
+    profit_factor_text = (
+        f"{pnl['profit_factor']:.2f}"
+    )
+
+
+col1.metric(
+    "Profit Factor",
+    profit_factor_text,
+)
+
+col2.metric(
+    "Average Winner",
+    f"{pnl['average_profit']:+,.2f}",
+)
+
+col3.metric(
+    "Average Loser",
+    f"{pnl['average_loss']:+,.2f}",
+)
+
+
+# ============================================================
+# MANUAL EXIT
+# ============================================================
+
+if open_trades:
+
+    st.subheader(
+        "🔴 Manual Paper Exit"
+    )
+
+    st.warning(
+        "Manual exit is available at any time. "
+        "The price entered below becomes the actual "
+        "paper SELL price. It can be above or below "
+        "the BUY price and above or below the target."
+    )
+
+    for trade in open_trades:
+
+        st.markdown(
+            f"### {trade['strategy']} "
+            f"— {trade['trading_symbol']}"
+        )
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        col1.metric(
+            "BUY",
+            f"{trade['entry_price']:.2f}",
+        )
+
+        if trade["current_price"] is None:
+
+            col2.metric(
+                "CURRENT",
+                "N/A",
+            )
+
+        else:
+
+            col2.metric(
+                "CURRENT",
+                f"{trade['current_price']:.2f}",
+            )
+
+        col3.metric(
+            "TARGET",
+            f"{trade['target_price']:.2f}",
+        )
+
+        if trade["current_price"] is None:
+
+            current_display = "N/A"
+
+        else:
+
+            current_display = (
+                f"{trade['current_price']:.2f}"
+            )
+
+        st.caption(
+            f"ID {trade['id']} | "
+            f"BUY {trade['entry_price']:.2f} | "
+            f"CURRENT {current_display} | "
+            f"TARGET {trade['target_price']:.2f}"
+        )
+
+        price_key = (
+            f"manual_exit_price_{trade['id']}"
+        )
+
+        manual_price = st.number_input(
+            "Manual SELL Price",
+            min_value=0.01,
+            value=(
+                float(
+                    trade["current_price"]
+                )
+                if trade["current_price"]
+                is not None
+                else float(
+                    trade["entry_price"]
+                )
+            ),
+            step=0.05,
+            format="%.2f",
+            key=price_key,
+        )
+
+        exit_button_key = (
+            f"manual_exit_{trade['id']}"
+        )
+
+        if st.button(
+            "🔴 MANUAL EXIT",
+            key=exit_button_key,
+            type="primary",
+        ):
+
+            try:
+
+                manager = get_paper_manager()
+
+                success = manager.manual_exit(
+                    trade_id=trade["id"],
+                    exit_price=manual_price,
+                )
+
+                if success:
+
+                    buy_price = float(
+                        trade["entry_price"]
+                    )
+
+                    pnl_points = (
+                        manual_price
+                        -
+                        buy_price
+                    )
+
+                    st.success(
+                        f"Trade ID {trade['id']} "
+                        f"manually exited at "
+                        f"{manual_price:.2f}. "
+                        f"P&L: "
+                        f"{pnl_points:+.2f} points."
+                    )
+
+                    time.sleep(1)
+
+                    st.rerun()
+
+                else:
+
+                    st.error(
+                        "Manual exit failed. "
+                        "The trade may already be closed."
+                    )
+
+            except Exception as error:
+
+                st.error(
+                    f"Manual exit error: {error}"
+                )
+
+        st.divider()
+
+
+# ============================================================
+# OPEN PAPER TRADES
+# ============================================================
+
+st.subheader(
+    "🟢 Open Paper Trades"
+)
+
+
+if not open_trades:
+
+    st.info(
+        "No open paper trades."
+    )
+
+else:
+
+    open_table = []
+
+    for trade in open_trades:
+
+        open_table.append({
+
+            "ID":
+                trade["id"],
+
+            "Strategy":
+                trade["strategy"],
+
+            "Option":
+                trade["option_type"],
+
+            "Strike":
+                int(
+                    trade["strike"]
+                ),
+
+            "Symbol":
+                trade["trading_symbol"],
+
+            "BUY":
+                trade["entry_price"],
+
+            "CURRENT":
+                trade["current_price"],
+
+            "P&L Points":
+                trade[
+                    "current_pnl_points"
+                ],
+
+            "TARGET":
+                trade["target_price"],
+
+            "To Target":
+                trade["to_target"],
+
+            "Status":
+                trade["status"],
+        })
+
+
+    st.dataframe(
+        open_table,
+        width="stretch",
+        hide_index=True,
+    )
+
+
+# ============================================================
+# POSITION DETAILS
+# ============================================================
+
+if open_trades:
+
+    st.subheader(
+        "Position Details"
+    )
+
+    for trade in open_trades:
+
+        with st.container(
+            border=True
+        ):
+
+            col1, col2, col3, col4, col5 = st.columns(5)
+
+            col1.write(
+                f"**{trade['strategy']}**"
+            )
+
+            col2.metric(
+                "BUY",
+                f"{trade['entry_price']:.2f}",
+            )
+
+            if trade["current_price"] is None:
+
+                col3.metric(
+                    "CURRENT",
+                    "N/A",
+                )
+
+            else:
+
+                col3.metric(
+                    "CURRENT",
+                    f"{trade['current_price']:.2f}",
+                )
+
+            if trade["current_pnl_points"] is None:
+
+                col4.metric(
+                    "P&L Points",
+                    "N/A",
+                )
+
+            else:
+
+                col4.metric(
+                    "P&L Points",
+                    f"{trade['current_pnl_points']:+.2f}",
+                )
+
+            col5.metric(
+                "TARGET",
+                f"{trade['target_price']:.2f}",
+            )
+
+            st.caption(
+                f"ID {trade['id']} | "
+                f"{trade['option_type']} | "
+                f"{trade['trading_symbol']} | "
+                f"Entry {trade['entry_time']}"
+            )
+
+
+# ============================================================
+# TRADE HISTORY
+# ============================================================
+
+st.subheader(
+    "Paper Trade History"
+)
+
+
+if trades:
+
+    history_table = []
+
+    for trade in trades:
+
+        if trade["status"] == "CLOSED":
+
+            pnl_value = (
+                trade["pnl_value"]
+                or
+                0
+            )
+
+            pnl_points = (
+                trade["pnl_points"]
+                or
+                0
+            )
+
+        else:
+
+            pnl_value = (
+                trade["current_pnl_value"]
+                or
+                0
+            )
+
+            pnl_points = (
+                trade["current_pnl_points"]
+                or
+                0
+            )
+
+        history_table.append({
+
+            "ID":
+                trade["id"],
+
+            "Strategy":
+                trade["strategy"],
+
+            "Option":
+                trade["option_type"],
+
+            "Strike":
+                int(
+                    trade["strike"]
+                ),
+
+            "BUY":
+                trade["entry_price"],
+
+            "SELL":
+                trade["exit_price"],
+
+            "CURRENT":
+                trade["current_price"],
+
+            "TARGET":
+                trade["target_price"],
+
+            "P&L Points":
+                pnl_points,
+
+            "P&L Value":
+                pnl_value,
+
+            "Exit Reason":
+                trade["exit_reason"],
+
+            "Status":
+                trade["status"],
+
+            "Entry":
+                trade["entry_time"],
+
+            "Exit":
+                trade["exit_time"],
+        })
+
+
+    st.dataframe(
+        history_table,
+        width="stretch",
+        hide_index=True,
+    )
+
+else:
+
+    st.info(
+        "No paper trades yet."
+    )
+
+
+# ============================================================
+# FOOTER
+# ============================================================
+
+st.caption(
+    "Paper trading only. "
+    "This dashboard does not place broker orders."
+)
+
+
+# ============================================================
+# AUTO REFRESH
+# ============================================================
+
+time.sleep(
+    refresh_seconds
+)
+
+st.rerun()

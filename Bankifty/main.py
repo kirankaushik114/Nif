@@ -9,6 +9,7 @@ from monitor.continuous_monitor import (
 
 # ============================================================
 # START DASHBOARD
+# cd D:\Nif\Bankifty    python -m uvicorn api.app:app --host 0.0.0.0 --port 8000
 # ============================================================
 
 def start_dashboard():
