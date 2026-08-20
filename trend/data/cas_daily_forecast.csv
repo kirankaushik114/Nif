@@ -1,0 +1,2 @@
+Forecast_Date,Current_Close,Expected_High,Expected_Low,Expected_Average,Expected_Close,Expected_Range,Volatility_Regime,Direction_Signal,Bias,Confidence,Support_1,Support_2,Resistance_2,Resistance_1,Selected_Strike,Primary_Option,Secondary_Option,CE_Trigger,PE_Trigger
+2026-08-13,24435.95,24515.65865625,24349.00640625,24432.33253125,24432.33253125,166.6522499999992,HIGH_VOLATILITY,-10.335625000000164,SIDEWAYS,37,24349.00640625,24394.2869375,24477.6130625,24515.65865625,24450,WAIT,WAIT,24515.65865625,24349.00640625

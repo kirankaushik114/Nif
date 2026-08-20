@@ -1,0 +1,5 @@
+growwapi
+pandas
+numpy
+python-dotenv
+pytest
